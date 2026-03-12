@@ -31,6 +31,24 @@ export class GreenApiService {
     return response.json();
   }
 
+  async setChatPresence(chatId: string, presence: 'composing' | 'recording' | 'paused') {
+    const url = this.getUrl('setChatPresence');
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chatId,
+        presence,
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn('Failed to set chat presence:', await response.text());
+    }
+  }
+
   async getStateInstance() {
     const url = this.getUrl('getStateInstance');
     const response = await fetch(url);

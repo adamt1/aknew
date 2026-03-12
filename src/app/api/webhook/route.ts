@@ -63,6 +63,9 @@ export async function POST(req: NextRequest) {
 
       console.log('Agent is active, generating response...');
 
+      // Set typing indicator
+      await greenApi.setChatPresence(chatId, 'composing');
+
       // Save user message
       await saveMessage(chatId, 'user', text);
 
