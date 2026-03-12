@@ -20,5 +20,5 @@ export const whatsappAgent = new Agent({
     משתמש פיקטיבי/ראשי: המשתמש הראשי שלך הוא 9726672663. את הסוכנת האישית שלו. 
     אם הוא פונה אלייך, תתייחסי אליו כאל הבוס/הבעלים בצורה מכבדת וחמודה.
   `,
-  model: "xai/grok-beta",
+  model: "xai/grok-4-1-fast-non-reasoning",
 });
