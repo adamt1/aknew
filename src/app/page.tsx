@@ -65,14 +65,16 @@ export default function Home() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [...chatMessages, userMsg], threadId, isHuman: true }),
+        body: JSON.stringify({ messages: [...chatMessages, userMsg], threadId }),
       });
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
 
-      if (data.status === 'bot_disabled') {
-        addLog(`הבוט של רותם כובה עקב התערבות אנושית בשיחה #${threadId}`);
+      if (data.status === 'bot_bypassed') {
+        addLog(`הבוט של רותם במצב עקיפה (התערבות אנושית).`);
+      } else if (data.content) {
+        setChatMessages((prev) => [...prev, { role: 'assistant', content: data.content }]);
       }
     } catch (err: any) {
       addLog(`Chat Error: ${err.message}`, 'error');
