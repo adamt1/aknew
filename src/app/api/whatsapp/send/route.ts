@@ -15,6 +15,12 @@ export async function POST(req: NextRequest) {
     // Green API expects chatId in format phoneNumber@c.us
     const chatId = `${phoneNumber.replace(/\D/g, '')}@c.us`;
     
+    // Disable bot for this thread (human intervention)
+    await setBotStatus(chatId, false);
+    
+    // Save manual message to history
+    await saveMessage(chatId, 'assistant', message);
+
     const result = await greenApi.sendMessage(chatId, message);
     
     return NextResponse.json(result);
