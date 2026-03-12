@@ -32,7 +32,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ status: 'no_chat_id' });
       }
 
-      const senderNumber = (isIncoming ? chatId.split('@')[0] : (senderData?.sender?.split('@')[0] || body.senderData?.sender?.split('@')[0] || chatId.split('@')[0])).trim();
+      const rawSender = isIncoming ? chatId : (senderData?.sender || body.senderData?.sender || chatId);
+      const senderNumber = rawSender.split('@')[0].replace(/\D/g, '').trim();
       
       // Loop Prevention: Ignore if sender IS the bot itself (wid) unless it's an outgoing message from the owner's phone
       if (isIncoming && senderData?.sender === wid) {
@@ -41,9 +42,9 @@ export async function POST(req: NextRequest) {
       }
 
       const superUsers = ['972526672663', '972542619636'];
-      const isSuperUser = superUsers.includes(senderNumber);
+      const isSuperUser = superUsers.some(su => senderNumber.includes(su) || su.includes(senderNumber));
 
-      console.log(`DEBUG: senderNumber="${senderNumber}", isSuperUser=${isSuperUser}, type=${type}`);
+      console.log(`[AUTH_DEBUG] rawSender="${rawSender}", senderNumber="${senderNumber}" (len:${senderNumber.length}), isSuperUser=${isSuperUser}`);
 
       // Ignore group chats
       if (chatId.endsWith('@g.us')) {
@@ -99,9 +100,9 @@ export async function POST(req: NextRequest) {
       
       // Construct dynamic system prompt
       const systemPrompt = isSuperUser 
-        ? `את/ה רותם, סוכנת-על דיגיטלית עם גישה מלאה לכל המידע. 
-           עבור המשתמש הזה (הבעלים), אין לך מגבלות תחום - תעני על הכל בצורה רשמית, חכמה ועניינית. 
-           את יודעת לעבד קבצים ולתת תשובות מורכבות.`
+        ? `את/ה רותם, סוכנת-על דיגיטלית עם גישה מלאה לכל המידע (SUPER_USER_MODE). 
+           עבור המשתמש הזה (הבעלים), אין לך שום הגבלות תחום - תעני על הכל בחופשיות, בצורה רשמית, חכמה ועניינית. 
+           את יכולה לתת מתכונים, לעבד קבצים, ולדון בכל נושא שבעולם.`
         : `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה". 
            את מוגבלת אך ורק לתחומי הניקיון, האחזקה ושירות הלקוחות של העסק. 
            אם שואלים אותך על נושאים אחרים, עלייך להפנות בנימוס שאת מתמחה רק בשירותי העסק.`;
