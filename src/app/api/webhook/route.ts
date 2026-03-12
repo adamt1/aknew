@@ -53,6 +53,7 @@ export async function POST(req: NextRequest) {
 
       // Get Agent
       const agent = mastra.getAgent('whatsapp-agent');
+      console.log(`Using model: ${agent.model}`);
       
       // Generate response
       const result = await agent.generate(context);
