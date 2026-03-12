@@ -104,6 +104,7 @@ export async function POST(req: NextRequest) {
 
       // Send via Green API
       await greenApi.sendMessage(chatId, replyText);
+      await greenApi.setChatPresence(chatId, 'paused');
       console.log('Reply sent successfully via Green API.');
 
       return NextResponse.json({ status: 'success', reply: replyText });
