@@ -6,6 +6,7 @@ import { saveMessage, getHistory, isBotActive } from '@/lib/supabase';
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
+    console.log('FULL WEBHOOK BODY:', JSON.stringify(body, null, 2));
     // Log the type of webhook received
     const type = body.typeWebhook;
     console.log(`Webhook type received: ${type}`);
