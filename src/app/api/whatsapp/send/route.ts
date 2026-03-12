@@ -1,4 +1,5 @@
 import { greenApi } from '@/lib/green-api';
+import { setBotStatus, saveMessage } from '@/lib/supabase';
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
