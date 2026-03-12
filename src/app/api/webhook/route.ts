@@ -26,25 +26,21 @@ export async function POST(req: NextRequest) {
       // Robust chatId extraction
       const chatId = senderData?.chatId || body.chatId || messageData?.chatId;
       const wid = body.instanceData?.wid;
+      const rawSender = isIncoming ? senderData?.sender : (senderData?.sender || body.senderData?.sender || chatId);
+      const senderNumber = (rawSender || '').split('@')[0].replace(/\D/g, '').trim();
+      const widNumber = (wid || '').split('@')[0].replace(/\D/g, '').trim();
       
-      if (!chatId) {
-        console.warn('Could not determine chatId from webhook body');
-        return NextResponse.json({ status: 'no_chat_id' });
-      }
-
-      const rawSender = isIncoming ? chatId : (senderData?.sender || body.senderData?.sender || chatId);
-      const senderNumber = rawSender.split('@')[0].replace(/\D/g, '').trim();
-      
-      // Loop Prevention: Ignore if sender IS the bot itself (wid) unless it's an outgoing message from the owner's phone
+      // Loop Prevention: Ignore if sender IS the bot itself (wid) unless it's an outgoing message from the owner's phone (which shows up as wid)
       if (isIncoming && senderData?.sender === wid) {
         console.log(`Ignoring loop message from self: ${wid}`);
         return NextResponse.json({ status: 'ignored_self_loop' });
       }
 
       const superUsers = ['972526672663', '972542619636'];
-      const isSuperUser = superUsers.some(su => senderNumber.includes(su) || su.includes(senderNumber));
+      // A user is a super user if their number is in the list OR if they are the bot owner (wid)
+      const isSuperUser = superUsers.includes(senderNumber) || (widNumber && senderNumber === widNumber);
 
-      console.log(`[AUTH_DEBUG] rawSender="${rawSender}", senderNumber="${senderNumber}" (len:${senderNumber.length}), isSuperUser=${isSuperUser}`);
+      console.log(`[AUTH_DEBUG] type=${type}, senderNumber="${senderNumber}", widNumber="${widNumber}", isSuperUser=${isSuperUser}`);
 
       // Ignore group chats
       if (chatId.endsWith('@g.us')) {
@@ -99,16 +95,22 @@ export async function POST(req: NextRequest) {
       const history = await getHistory(chatId);
       
       // Construct dynamic system prompt
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('he-IL', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const timeStr = now.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+
       const systemPrompt = isSuperUser 
         ? `את/ה רותם, סוכנת-על דיגיטלית עם גישה מלאה לכל המידע (SUPER_USER_MODE). 
+           זמן נוכחי (לפי ישראל): ${dateStr}, בשעה ${timeStr}.
            עבור המשתמש הזה (הבעלים), אין לך שום הגבלות תחום - תעני על הכל בחופשיות, בצורה רשמית, חכמה ועניינית. 
            את יכולה לתת מתכונים, לעבד קבצים, ולדון בכל נושא שבעולם.`
-        : `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה". 
+        : `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה" (RESTRICTED_MODE). 
+           זמן נוכחי (לפי ישראל): ${dateStr}, בשעה ${timeStr}.
            את מוגבלת אך ורק לתחומי הניקיון, האחזקה ושירות הלקוחות של העסק. 
            אם שואלים אותך על נושאים אחרים, עלייך להפנות בנימוס שאת מתמחה רק בשירותי העסק.
 
            בכל פעם שאת מציגה את האפשרויות, השתמשי בפורמט המדויק הזה (כולל סימני כיוון מימין-לשמאל):
-           \u200F1. 🆕 לקוח חדש
+           \u200F1. לקוח חדש 🆕
            \u200F2. 🛠️ שירות לקוחות
            \u200F3. 📝 אחר...`;
 
