@@ -10,17 +10,21 @@ export async function POST(req: NextRequest) {
     const type = body.typeWebhook;
     console.log(`Webhook type received: ${type}`);
 
-    // Handle incoming text message (different versions of Green API use different keys)
-    if (type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived') {
+    // Handle incoming and outgoing text messages
+    const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
+    const isOutgoing = type === 'outgoingMessageReceived' || type === 'outgoingAPIMessageReceived';
+
+    if (isIncoming || isOutgoing) {
       const { senderData, messageData } = body;
       
-      if (!senderData || !messageData) {
+      if ((!senderData && isIncoming) || !messageData) {
         console.warn('Missing senderData or messageData in webhook body');
         return NextResponse.json({ status: 'invalid_payload' });
       }
 
-      const chatId = senderData.chatId;
-      const senderNumber = chatId.split('@')[0];
+      // For outgoing messages, chatId is in the top-level body or messageData depending on Green API version
+      const chatId = isIncoming ? senderData.chatId : body.chatId;
+      const senderNumber = isIncoming ? chatId.split('@')[0] : body.senderData?.sender?.split('@')[0];
       const superUsers = ['972526672663', '972542619636'];
       const isSuperUser = superUsers.includes(senderNumber);
 
