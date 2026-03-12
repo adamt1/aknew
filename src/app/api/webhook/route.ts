@@ -20,6 +20,9 @@ export async function POST(req: NextRequest) {
       }
 
       const chatId = senderData.chatId;
+      const senderNumber = chatId.split('@')[0];
+      const superUsers = ['972526672663', '972542619636'];
+      const isSuperUser = superUsers.includes(senderNumber);
 
       // Ignore group chats
       if (chatId.endsWith('@g.us')) {
@@ -27,16 +30,28 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ status: 'ignored_group' });
       }
 
-      // Handle both textMessage and extendedTextMessage (like replies)
+      // Handle message content
       const text = messageData.textMessageData?.textMessage || 
                    messageData.extendedTextMessageData?.text ||
                    messageData.quotedMessage?.text;
 
+      const typeMessage = messageData.typeMessage;
+
+      console.log(`Processing message from ${chatId} (Super: ${isSuperUser}): "${text || typeMessage}"`);
+
       console.log(`Processing message from ${chatId}: "${text}"`);
 
-      if (!text) {
-        console.log('No text content found in message, ignoring.');
+      if (!text && !isSuperUser) {
+        console.log('No text content for regular user, ignoring.');
         return NextResponse.json({ status: 'no_text' });
+      }
+
+      if (!text && isSuperUser) {
+        const fileMsg = `קיבלתי את הקובץ מסוג ${typeMessage}. אני מעבד אותו כרגע...`;
+        await greenApi.sendMessage(chatId, fileMsg);
+        // In a real scenario, we would download the file and process it. 
+        // For now we acknowledge it to the super user.
+        return NextResponse.json({ status: 'file_received_super' });
       }
 
       // Check if bot is active for this thread
@@ -53,10 +68,23 @@ export async function POST(req: NextRequest) {
 
       // Fetch history
       const history = await getHistory(chatId);
-      const context = history.map((h: any) => ({
-        role: h.role,
-        content: h.content,
-      }));
+      
+      // Construct dynamic system prompt
+      const systemPrompt = isSuperUser 
+        ? `את/ה רותם, סוכנת-על דיגיטלית עם גישה מלאה לכל המידע. 
+           עבור המשתמש הזה (הבעלים), אין לך מגבלות תחום - תעני על הכל בצורה רשמית, חכמה ועניינית. 
+           את יודעת לעבד קבצים ולתת תשובות מורכבות.`
+        : `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה". 
+           את מוגבלת אך ורק לתחומי הניקיון, האחזקה ושירות הלקוחות של העסק. 
+           אם שואלים אותך על נושאים אחרים, עלייך להפנות בנימוס שאת מתמחה רק בשירותי העסק.`;
+
+      const context = [
+        { role: 'system', content: systemPrompt },
+        ...history.map((h: any) => ({
+          role: h.role,
+          content: h.content,
+        }))
+      ];
 
       // Get Agent
       const agent = mastra.getAgent('whatsapp-agent');
