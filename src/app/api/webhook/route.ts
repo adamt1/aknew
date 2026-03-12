@@ -24,7 +24,13 @@ export async function POST(req: NextRequest) {
 
       // For outgoing messages, chatId is in the top-level body or messageData depending on Green API version
       const chatId = isIncoming ? senderData.chatId : body.chatId;
-      const senderNumber = isIncoming ? chatId.split('@')[0] : body.senderData?.sender?.split('@')[0];
+      
+      if (!chatId) {
+        console.warn('Could not determine chatId from webhook body');
+        return NextResponse.json({ status: 'no_chat_id' });
+      }
+
+      const senderNumber = isIncoming ? chatId.split('@')[0] : (body.senderData?.sender?.split('@')[0] || chatId.split('@')[0]);
       const superUsers = ['972526672663', '972542619636'];
       const isSuperUser = superUsers.includes(senderNumber);
 
@@ -41,9 +47,13 @@ export async function POST(req: NextRequest) {
 
       const typeMessage = messageData.typeMessage;
 
-      console.log(`Processing message from ${chatId} (Super: ${isSuperUser}): "${text || typeMessage}"`);
+      // Prevention Loop: Don't respond to messages sent by the API itself (the bot's own replies)
+      if (type === 'outgoingAPIMessageReceived') {
+        console.log('Ignoring message sent via API to prevent loop.');
+        return NextResponse.json({ status: 'ignored_api_outgoing' });
+      }
 
-      console.log(`Processing message from ${chatId}: "${text}"`);
+      console.log(`Processing message from ${chatId} (Super: ${isSuperUser}, Type: ${type}): "${text || typeMessage}"`);
 
       if (!text && !isSuperUser) {
         console.log('No text content for regular user, ignoring.');
