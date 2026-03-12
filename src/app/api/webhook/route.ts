@@ -23,15 +23,16 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ status: 'invalid_payload' });
       }
 
-      // For outgoing messages, chatId is in the top-level body or messageData depending on Green API version
-      const chatId = isIncoming ? senderData.chatId : body.chatId;
+      // Robust chatId extraction
+      const chatId = senderData?.chatId || body.chatId || messageData?.chatId;
       
       if (!chatId) {
         console.warn('Could not determine chatId from webhook body');
+        console.log('BODY STRUCTURE:', JSON.stringify(body));
         return NextResponse.json({ status: 'no_chat_id' });
       }
 
-      const senderNumber = isIncoming ? chatId.split('@')[0] : (body.senderData?.sender?.split('@')[0] || chatId.split('@')[0]);
+      const senderNumber = isIncoming ? chatId.split('@')[0] : (senderData?.sender?.split('@')[0] || body.senderData?.sender?.split('@')[0] || chatId.split('@')[0]);
       const superUsers = ['972526672663', '972542619636'];
       const isSuperUser = superUsers.includes(senderNumber);
 
