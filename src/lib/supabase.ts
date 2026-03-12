@@ -35,7 +35,7 @@ export async function isBotActive(threadId: string) {
     .eq('id', threadId)
     .single();
   
-  if (error || !data) return false; // Default to inactive if not found
+  if (error || !data) return true; // Default to active if not found
   return data.is_bot_active;
 }
 

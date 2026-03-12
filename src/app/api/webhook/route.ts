@@ -20,6 +20,13 @@ export async function POST(req: NextRequest) {
       }
 
       const chatId = senderData.chatId;
+
+      // Ignore group chats
+      if (chatId.endsWith('@g.us')) {
+        console.log(`Ignoring group message from ${chatId}`);
+        return NextResponse.json({ status: 'ignored_group' });
+      }
+
       // Handle both textMessage and extendedTextMessage (like replies)
       const text = messageData.textMessageData?.textMessage || 
                    messageData.extendedTextMessageData?.text ||
