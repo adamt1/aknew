@@ -57,6 +57,67 @@ export class GreenApiService {
     }
     return response.json();
   }
+
+  async downloadFile(downloadUrl: string): Promise<Buffer> {
+    const response = await fetch(downloadUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to download file: ${response.statusText}`);
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
+  async uploadFile(buffer: Buffer, mimeType: string, filename?: string): Promise<string> {
+    const url = this.getUrl('uploadFile');
+    
+    const headers: Record<string, string> = {
+      'Content-Type': mimeType,
+    };
+    if (filename) {
+      headers['GA-Filename'] = filename;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: blobFromBuffer(buffer, mimeType), // We need to create a blob for Node fetch if it strictly expects Blob/FormData for binary POST, but standard `fetch` handles Buffer/Uint8Array natively as body. Let's just pass buffer directly.
+    });
+
+    if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`Failed to upload file to Green API: ${err}`);
+    }
+
+    const data = await response.json();
+    return data.urlFile;
+  }
+
+  async sendFileByUrl(chatId: string, urlFile: string, fileName: string, caption?: string) {
+    const url = this.getUrl('sendFileByUrl');
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chatId,
+        urlFile,
+        fileName,
+        caption,
+      }),
+    });
+
+    if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`Failed to send file by URL: ${err}`);
+    }
+
+    return response.json();
+  }
+}
+
+function blobFromBuffer(buffer: Buffer, type: string) {
+  return new Blob([new Uint8Array(buffer)], { type });
 }
 
 export const greenApi = new GreenApiService();

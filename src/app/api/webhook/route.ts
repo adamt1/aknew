@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
 import { greenApi } from '@/lib/green-api';
-import { saveMessage, getHistory, isBotActive } from '@/lib/supabase';
+import { saveMessage, getHistory, isBotActive, setBotStatus } from '@/lib/supabase';
+import { elevenLabs } from '@/lib/elevenlabs';
 
 export async function POST(req: NextRequest) {
   try {
@@ -9,7 +10,8 @@ export async function POST(req: NextRequest) {
     console.log('FULL WEBHOOK BODY:', JSON.stringify(body, null, 2));
     // Log the type of webhook received
     const type = body.typeWebhook;
-    console.log(`Webhook type received: ${type}`);
+    const APP_VERSION = 'v2.2-voice';
+    console.log(`[${APP_VERSION}] Webhook received: ${type}`);
 
     // Handle incoming and outgoing text messages
     const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
@@ -30,17 +32,28 @@ export async function POST(req: NextRequest) {
       const senderNumber = (rawSender || '').split('@')[0].replace(/\D/g, '').trim();
       const widNumber = (wid || '').split('@')[0].replace(/\D/g, '').trim();
       
-      // Loop Prevention: Ignore if sender IS the bot itself (wid) unless it's an outgoing message from the owner's phone (which shows up as wid)
-      if (isIncoming && senderData?.sender === wid) {
+      const superUsers = ['972526672663', '972542619636'];
+      // Robust super user detection
+      const cleanSender = senderNumber.replace(/\D/g, ''); 
+      const isSuperUser = superUsers.some(u => cleanSender.includes(u)) || (widNumber && cleanSender.includes(widNumber));
+
+      console.log(`[AUTH_DEBUG] type=${type}, senderNumber="${senderNumber}", cleanSender="${cleanSender}", widNumber="${widNumber}", isSuperUser=${isSuperUser}`);
+
+      // Karin Exclusion Logic: Don't respond to Karin unless she's messaging herself
+      const senderName = senderData?.senderName || '';
+      const isKarin = senderName.includes('קארין') || senderName.includes('Karin');
+      const isSelfMessage = senderData?.sender === wid;
+
+      if (isKarin && !isSelfMessage && isIncoming) {
+        console.log(`Ignoring message from Karin (${chatId}) to prevent interference.`);
+        return NextResponse.json({ status: 'ignored_karin' });
+      }
+
+      // Loop Prevention: Ignore if sender IS the bot itself (wid) UNLESS it's the owner (super user) or Karin messaging herself
+      if (isIncoming && isSelfMessage && !isSuperUser && !isKarin) {
         console.log(`Ignoring loop message from self: ${wid}`);
         return NextResponse.json({ status: 'ignored_self_loop' });
       }
-
-      const superUsers = ['972526672663', '972542619636'];
-      // A user is a super user if their number is in the list OR if they are the bot owner (wid)
-      const isSuperUser = superUsers.includes(senderNumber) || (widNumber && senderNumber === widNumber);
-
-      console.log(`[AUTH_DEBUG] type=${type}, senderNumber="${senderNumber}", widNumber="${widNumber}", isSuperUser=${isSuperUser}`);
 
       // Ignore group chats
       if (chatId.endsWith('@g.us')) {
@@ -49,11 +62,12 @@ export async function POST(req: NextRequest) {
       }
 
       // Handle message content
-      const text = messageData.textMessageData?.textMessage || 
+      let text = messageData.textMessageData?.textMessage || 
                    messageData.extendedTextMessageData?.text ||
                    messageData.quotedMessage?.text;
 
       const typeMessage = messageData.typeMessage;
+      const isVoiceMessage = typeMessage === 'audioMessage';
 
       // Prevention Loop: Don't respond to messages sent by the API itself (the bot's own replies)
       if (type === 'outgoingAPIMessageReceived') {
@@ -61,14 +75,44 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ status: 'ignored_api_outgoing' });
       }
 
-      console.log(`Processing message from ${chatId} (Super: ${isSuperUser}, Type: ${type}): "${text || typeMessage}"`);
+      // Human Intervention Logic: If owner sends a message to a user, disable the bot for that thread
+      if (isOutgoing && isSuperUser) {
+        // Only disable if messaging someone else (not testing with self or the bot itself)
+        if (chatId !== rawSender && (!wid || !chatId.includes(widNumber))) {
+          console.log(`[HUMAN_INTERVENTION] Owner ${senderNumber} messaged ${chatId}. Disabling bot.`);
+          await setBotStatus(chatId, false);
+          return NextResponse.json({ status: 'bot_disabled_by_owner' });
+        }
+        console.log(`[HUMAN_INTERVENTION_SKIP] Owner is messaging self or bot instance. No override.`);
+      }
 
-      if (!text && !isSuperUser) {
+      // Voice message transcription
+      if (isVoiceMessage) {
+        const downloadUrl = messageData.fileMessageData?.downloadUrl;
+        if (downloadUrl) {
+           console.log(`[STT] Downloading voice message from ${downloadUrl}`);
+           try {
+             const audioBuffer = await greenApi.downloadFile(downloadUrl);
+             text = await elevenLabs.speechToText(audioBuffer);
+             console.log(`[STT] Transcribed: "${text}"`);
+           } catch (e: any) {
+             console.error(`[STT Error] Failed to transcribe: ${e.message}`);
+             if (isSuperUser) {
+               await greenApi.sendMessage(chatId, `❌ [Debug STT Error] ${e.message}`);
+             }
+             return NextResponse.json({ status: 'stt_failed' });
+           }
+        }
+      }
+
+      console.log(`Processing message from ${chatId} (Super: ${isSuperUser}, Type: ${typeMessage}): "${text}"`);
+
+      if (!text && !isSuperUser && !isVoiceMessage) {
         console.log('No text content for regular user, ignoring.');
         return NextResponse.json({ status: 'no_text' });
       }
 
-      if (!text && isSuperUser) {
+      if (!text && isSuperUser && !isVoiceMessage) {
         const fileMsg = `קיבלתי את הקובץ מסוג ${typeMessage}. אני מעבד אותו כרגע...`;
         await greenApi.sendMessage(chatId, fileMsg);
         // In a real scenario, we would download the file and process it. 
@@ -86,41 +130,101 @@ export async function POST(req: NextRequest) {
       console.log('Agent is active, generating response...');
 
       // Set typing indicator
-      await greenApi.setChatPresence(chatId, 'composing');
+      await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
 
-      // Save user message
-      await saveMessage(chatId, 'user', text);
+      // Save user message (including transcribed text)
+      await saveMessage(chatId, 'user', text || '[Voice Message]');
 
       // Fetch history
       const history = await getHistory(chatId);
       
-      // Construct dynamic system prompt
-      const now = new Date();
-      const dateStr = now.toLocaleDateString('he-IL', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-      const timeStr = now.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+      // Contact classification
+      const isOfficeOrCommittee = senderName.includes('משרד') || senderName.includes('ועד בית');
 
-      const systemPrompt = isSuperUser 
-        ? `את/ה רותם, סוכנת-על דיגיטלית עם גישה מלאה לכל המידע (SUPER_USER_MODE). 
-           זמן נוכחי (לפי ישראל): ${dateStr}, בשעה ${timeStr}.
-           עבור המשתמש הזה (הבעלים), אין לך שום הגבלות תחום - תעני על הכל בחופשיות, בצורה רשמית, חכמה ועניינית. 
-           את יכולה לתת מתכונים, לעבד קבצים, ולדון בכל נושא שבעולם.`
-        : `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה" (RESTRICTED_MODE). 
-           זמן נוכחי (לפי ישראל): ${dateStr}, בשעה ${timeStr}.
-           את מוגבלת אך ורק לתחומי הניקיון, האחזקה ושירות הלקוחות של העסק. 
-           אם שואלים אותך על נושאים אחרים, עלייך להפנות בנימוס שאת מתמחה רק בשירותי העסק.
+      // Use message timestamp for better accuracy, fallback to server time
+      const now = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
+      console.log(`[TIME_DEBUG] Server: ${new Date().toISOString()}, Message: ${now.toISOString()}, GreenTimestamp: ${body.timestamp}`);
+      
+      // Ensure we use Israel TimeZone specifically, otherwise Vercel defaults to UTC
+      const dateStr = now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const timeStr = now.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit' });
+      
+      // Force Loop Break: If the user asks for the opening message, we ignore history to prevent copy-pasting the old format
+      const isAskingForOpening = text?.includes('הודעת פתיחה') || text?.includes('הודעת הפתיחה');
 
-           בכל פעם שאת מציגה את האפשרויות, השתמשי בפורמט המדויק הזה (כולל סימני כיוון מימין-לשמאל):
-           \u200F1. לקוח חדש 🆕
-           \u200F2. 🛠️ שירות לקוחות
-           \u200F3. 📝 אחר...`;
+      const isoStr = now.toISOString();
+      const epochSeconds = Math.floor(now.getTime() / 1000);
 
+      // Standard Formatting Rules for ALL Users
+      const globalStandard = `
+        הנחיה גורפת לזמנים - חובה לקרוא לפני כל תשובה:
+        היום הוא ${dateStr}. השעה היא ${timeStr}.
+        ערכים טכניים מדויקים:
+        - ISO-8601: ${isoStr}
+        - Unix Epoch: ${epochSeconds}
+        - יום בשבוע: ${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long' })}
+        
+        כל חישוב של "מחר", "אתמול", או "עוד X זמן" חייב להתבסס אך ורק על הנתונים לעיל. אל תסתמכי על שום ידע קודם לגבי התאריך. אם את קובעת פגישה ל"מחר", התאריך חייב להיות היום שאחרי ה-${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', day: 'numeric', month: 'numeric' })}.
+        
+        הנחיות קריטיות לעיצוב וסגנון (תקף לכל השיחות):
+        - **מלל העסק**: השתמשי תמיד בביטוי "הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה" (לעולם אל תשתמשי במילה "תחזוקה").
+        - **יישור לימין**: כל שורה של הודעת הפתיחה או הרשימה חייבת להתחיל בתו ה-RLM הסמוי (\u200F).
+        - **הפורמט המדויק להודעת הפתיחה (חובה להשתמש בזה בדיוק!)**:
+          \u200F*שלום רב,*  
+          \u200Fאני רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹. 
+          \u200Fנשמח לעמוד לשירותכם! ✨
+          \u200Fבמה אוכל לעזור? אנא בחרו את האופציה המתאימה:
+          \u200F1️⃣ **לקוח חדש** - לקבלת הצעת מחיר מפתיעה 🏢.
+          \u200F2️⃣ **לקוח קיים** - לשירות לקוחות ותמיכה טכנית 🛠️.
+          \u200F3️⃣ **אחר** - לכל נושא או בירור נוסף 💬.
+          
+          \u200Fאו כתוב לי את בקשתך החופשית! 😊
+        - **טון דיבור**: היי מאוד לבבית, חייכנית ושירותית 😊✨. השתמשי באימוג'ים שמחים (✨, 😊, 🙏, ✅).
+        - **הפקת מסמכים**: יש לך אפשרות להפיק מסמכים (חשבונית, קבלה, הצעת מחיר) דרך המערכת בעזרת הכלים שלך. לפני הפקת מסמך, תמיד ודאי שכל הפרטים קיימים: שם לקוח, סוג מסמך, תיאור שירות, כמות, ומחיר ליחידה.
+        - **תזכורות**: יש לך אפשרות לתזמן תזכורות באמצעות הכלי scheduleReminder. כאשר הלקוח מבקש תזכורת (למשל: "תזכירי לי בעוד שעה..."), חשבי את הזמן המדויק לפי השעה הנוכחית וצרי את התזכורת. לאחר יצירתה, תמיד אשרי ללקוח שהתזכורת נקבעה לשעה המדויקת.
+        - **יומן גוגל (Calendar)**: יש לך אפשרות לקבוע פגישות ביומן גוגל באמצעות הכלי scheduleCalendarEvent. ודאי שיש לך את כותרת הפגישה, התאריך והשעה. אם לא צוין זמן סיום, הניחי שהפגישה נמשכת שעה אחת. אשרי ללקוח לאחר קביעת הפגישה וספקי לו את פרטי הזמן.
+      `;
+
+      let systemPrompt = '';
+
+      if (isSuperUser) {
+        systemPrompt = `את/ה רותם, סוכנת-על דיגיטלית חכמה. המשתמש הנוכחי הוא הבעלים שלך (${senderNumber}).
+          ${globalStandard}
+          חשוב ביותר: עבור הבעלים, אין לך שום הגבלה על נושאי השיחה.
+          הסגנון שלך חייב להיות ענייני, מקצועי ומכובד. ללא מילות חיבה.`;
+          
+        if (isAskingForOpening) {
+          systemPrompt += `\nהבעלים ביקש לראות את הודעת הפתיחה. הצג לו אותה בדיוק לפי הפורמט של 1, 2, 3 והמלל שצוין לעיל.`;
+        }
+      } else if (isOfficeOrCommittee) {
+          systemPrompt = `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה". 
+          ${globalStandard}
+          המשתמש הזה הוא "משרד" או "ועד בית". עני בצורה עניינית ומקצועית בלבד ובנושאי ניקיון/אחזקה.`;
+      } else {
+          systemPrompt = `את/ה רותם, סוכנת שירות לקוחות רשמית וחייכנית של "איי קיי חברת ניקיון ואחזקה" ✨. 
+          ${globalStandard}
+          את מוגבלת אך ורק לתחומי הניקיון, האחזקה ושירות הלקוחות של העסק.`;
+      }
+
+      // Add instruction for voice message context
+      if (isVoiceMessage) {
+        systemPrompt += `\n\nהערה חשובה: המשתמש שלח לך הודעה קולית שאותה תמללנו. הקפידי לענות לו בצורה טבעית וזורמת שמתאימה לשיחה הקולית, בלי לכלול עיצובים מוזרים שנועדו רק לקריאה (כמו \u200F או הדגשות כוכביות), כי המערכת מיד תמיר את התשובה שלך לקול ותשלח לו אותה כהודעה קולית בחזרה. פשוט תכתבי טקסט זורם שאפשר להקריא בקול.`;
+      }
+
+      // Form context
       const context = [
         { role: 'system', content: systemPrompt },
-        ...history.map((h: any) => ({
+        ...(isAskingForOpening ? [] : history.map((h: any) => ({
           role: h.role,
           content: h.content,
-        }))
+        })))
       ];
+
+      // Add a final, non-negotiable instruction to ensure the formatting and rules are followed
+      context.push({
+        role: 'system',
+        content: `תזכורת סופית: היום ה-${dateStr}, השעה ${timeStr}. ${!isVoiceMessage ? 'השתמשי בדיוק בטקסט של הודעת הפתיחה שצוין לעיל (עם 1️⃣, 2️⃣, 3️⃣ ותו \u200F). המלל המדויק כולל "ניקיון ואחזקה" (ללא המילה תחזוקה).' : ''} ${isAskingForOpening ? 'כעת הצג את הודעת הפתיחה המלאה.' : ''}`
+      });
 
       // Get Agent
       const agent = mastra.getAgent('whatsapp-agent');
@@ -130,22 +234,54 @@ export async function POST(req: NextRequest) {
       const result = await agent.generate(context);
       const replyText = result.text;
 
-      console.log(`Generated reply: "${replyText}"`);
+      console.log(`[${APP_VERSION}] Generated reply: "${replyText}"`);
 
       // Save assistant message
       await saveMessage(chatId, 'assistant', replyText);
 
-      // Send via Green API
-      await greenApi.sendMessage(chatId, replyText);
+      // Send via Green API (Voice or Text)
+      if (isVoiceMessage) {
+         try {
+           console.log(`[TTS] Generating voice note for reply...`);
+           const ttsBuffer = await elevenLabs.textToSpeech(replyText);
+           const uploadUrl = await greenApi.uploadFile(ttsBuffer, 'audio/mpeg', 'reply.mp3');
+           await greenApi.sendFileByUrl(chatId, uploadUrl, 'reply.mp3');
+           console.log('Voice note sent successfully.');
+         } catch (e: any) {
+           console.error(`[TTS Error] Failed to generate/send voice note (${e.message}). Falling back to text...`);
+           await greenApi.sendMessage(chatId, replyText);
+         }
+      } else {
+         await greenApi.sendMessage(chatId, replyText);
+         console.log('Text reply sent successfully.');
+      }
+      
       await greenApi.setChatPresence(chatId, 'paused');
-      console.log('Reply sent successfully via Green API.');
 
-      return NextResponse.json({ status: 'success', reply: replyText });
+
+      return NextResponse.json({ 
+        status: 'success', 
+        reply: replyText,
+        debug: {
+          isSuperUser,
+          senderNumber,
+          cleanSender,
+          widNumber,
+          type
+        }
+      });
     }
 
     return NextResponse.json({ status: 'ignored_event' });
   } catch (error: any) {
     console.error('Webhook Error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const detail = error.responseBody || error.data || null;
+    if (detail) {
+      console.error('AI Error Detail:', detail);
+    }
+    return NextResponse.json({ 
+      error: error.message, 
+      detail: typeof detail === 'string' ? JSON.parse(detail) : detail 
+    }, { status: 500 });
   }
 }
