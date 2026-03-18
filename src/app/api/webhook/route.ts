@@ -127,14 +127,19 @@ export async function POST(req: NextRequest) {
 
       // Fetch history
       const history = await getHistory(chatId);
-      
+      console.log(`[LOG] chatId=${chatId}, historyLength=${history.length}, isSuperUser=${isSuperUser}`);
+
       // Use message timestamp for better accuracy, fallback to server time
       const now = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
       console.log(`[TIME_DEBUG] Server: ${new Date().toISOString()}, Message: ${now.toISOString()}, GreenTimestamp: ${body.timestamp}`);
       
       const senderName = pushName || contactName || '';
 
-      // Ensure we use Israel TimeZone specifically, otherwise Vercel defaults to UTC
+      // Force Opening Message decision
+      // We only force it if history is 0 AND it's not a SuperUser
+      const shouldForceOpening = !isSuperUser && history.length === 0;
+
+      // Ensure we use Israel TimeZone specifically
       const dateStr = now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
       const timeStr = now.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit' });
       
@@ -156,35 +161,32 @@ export async function POST(req: NextRequest) {
         כל חישוב של "מחר", "אתמול", או "עוד X זמן" חייב להתבסס אך ורק על הנתונים לעיל. אל תסתמכי על שום ידע קודם לגבי התאריך. אם את קובעת פגישה ל"מחר", התאריך חייב להיות היום שאחרי ה-${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', day: 'numeric', month: 'numeric' })}.
         
         הנחיות קריטיות לעיצוב וסגנון (תקף לכל השיחות):
+        הנחיות קריטיות לעיצוב וסגנון (תקף לכל השיחות):
         - **מלל העסק**: השתמשי תמיד בביטוי "הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה" (לעולם אל תשתמשי במילה "תחזוקה").
         - **יישור לימין**: כל שורה של הודעת הפתיחה או הרשימה חייבת להתחיל בתו ה-RLM הסמוי (\u200F).
-        - **הפורמט המדויק להודעת הפתיחה (חובה להשתמש בזה בדיוק!)**:
-          \u200F*שלום רב,*  
-          \u200Fאני רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹. 
-          \u200Fנשמח לעמוד לשירותכם! ✨
-          \u200Fבמה אוכל לעזור? אנא בחרו את האופציה המתאימה:
-          \u200F1️⃣ **לקוח חדש** - לקבלת הצעת מחיר מפתיעה 🏢.
-          \u200F2️⃣ **לקוח קיים** - לשירות לקוחות ותמיכה טכנית 🛠️.
-          \u200F3️⃣ **אחר** - לכל נושא או בירור נוסף 💬.
-          
-          \u200Fאו כתוב לי את בקשתך החופשית! 😊
         - **טון דיבור**: היי מאוד לבבית, חייכנית ושירותית 😊✨. השתמשי באימוג'ים שמחים (✨, 😊, 🙏, ✅).
-        - **הפקת מסמכים**: יש לך אפשרות להפיק מסמכים (חשבונית, קבלה, הצעת מחיר) דרך המערכת בעזרת הכלים שלך. לפני הפקת מסמך, תמיד ודאי שכל הפרטים קיימים: שם לקוח, סוג מסמך, תיאור שירות, כמות, ומחיר ליחידה.
-        - **תזכורות**: יש לך אפשרות לתזמן תזכורות באמצעות הכלי scheduleReminder. כאשר הלקוח מבקש תזכורת (למשל: "תזכירי לי בעוד שעה..."), חשבי את הזמן המדויק לפי השעה הנוכחית וצרי את התזכורת. לאחר יצירתה, תמיד אשרי ללקוח שהתזכורת נקבעה לשעה המדויקת.
-        - **יומן גוגל (Calendar)**: יש לך אפשרות לקבוע פגישות ביומן גוגל באמצעות הכלי scheduleCalendarEvent. ודאי שיש לך את כותרת הפגישה, התאריך והשעה. אם לא צוין זמן סיום, הניחי שהפגישה נמשכת שעה אחת. אשרי ללקוח לאחר קביעת הפגישה וספקי לו את פרטי הזמן.
+        - **הפקת מסמכים**: יש לך אפשרות להפיק מסמכים (חשבונית, קבלה, הצעת מחיר) בעזרת הכלים שלך.
+        - **תזכורות**: יש לך אפשרות לתזמן תזכורות (scheduleReminder).
+        - **יומן גוגל**: יש לך אפשרות לקבוע פגישות (scheduleCalendarEvent).
       `;
 
-      let systemPrompt = '';
+      const openingInstruction = shouldForceOpening ? `
+\u200F*שלום רב,*  
+\u200Fאני רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹. 
+\u200Fנשמח לעמוד לשירותכם! ✨
+\u200Fבמה אוכל לעזור? אנא בחרו את האופציה המתאימה:
+\u200F1️⃣ **לקוח חדש** - לקבלת הצעת מחיר מפתיעה 🏢.
+\u200F2️⃣ **לקוח קיים** - לשירות לקוחות ותמיכה טכנית 🛠️.
+\u200F3️⃣ **אחר** - לכל נושא או בירור נוסף 💬.
 
+\u200Fאו כתוב לי את בקשתך החופשית! 😊` : '';
+
+      let systemPrompt = '';
       if (isSuperUser) {
         systemPrompt = `את/ה רותם, סוכנת-על דיגיטלית חכמה. המשתמש הנוכחי הוא הבעלים שלך (${senderNumber}).
           ${globalStandard}
           חשוב ביותר: עבור הבעלים, אין לך שום הגבלה על נושאי השיחה.
           הסגנון שלך חייב להיות ענייני, מקצועי ומכובד. ללא מילות חיבה.`;
-          
-        if (isAskingForOpening) {
-          systemPrompt += `\nהבעלים ביקש לראות את הודעת הפתיחה. הצג לו אותה בדיוק לפי הפורמט של 1, 2, 3 והמלל שצוין לעיל.`;
-        }
       } else if (isOfficeOrCommittee) {
           systemPrompt = `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה". 
           ${globalStandard}
@@ -195,25 +197,21 @@ export async function POST(req: NextRequest) {
           את מוגבלת אך ורק לתחומי הניקיון, האחזקה ושירות הלקוחות של העסק.`;
       }
 
-      // Add instruction for voice message context
       if (isVoiceMessage) {
-        systemPrompt += `\n\nהערה חשובה: המשתמש שלח לך הודעה קולית שאותה תמללנו. הקפידי לענות לו בצורה טבעית וזורמת שמתאימה לשיחה הקולית, בלי לכלול עיצובים מוזרים שנועדו רק לקריאה (כמו \u200F או הדגשות כוכביות), כי המערכת מיד תמיר את התשובה שלך לקול ותשלח לו אותה כהודעה קולית בחזרה. פשוט תכתבי טקסט זורם שאפשר להקריא בקול.`;
+        systemPrompt += `\n\nחשוב: המשתמש שלח הודעה קולית. עני בטקסט זורם להקראה, ללא עיצובים (כמו \u200F או *).`;
       }
 
-      // Form context
       const context = [
         { role: 'system', content: systemPrompt },
         ...(isAskingForOpening ? [] : history.map((h: any) => ({
-          role: h.role,
+          role: h.role === 'assistant' ? 'assistant' : 'user',
           content: h.content,
         })))
       ];
 
-      // Add a final instruction for formatting, but only force the opening if it's a new non-owner chat
-      const shouldForceOpening = !isSuperUser && history.length === 0;
       context.push({
         role: 'system',
-        content: `תזכורת סופית: היום ה-${dateStr}, השעה ${timeStr}. ${shouldForceOpening ? 'השתמשי בדיוק בטקסט של הודעת הפתיחה שצוין לעיל (עם 1️⃣, 2️⃣, 3️⃣ ותו \u200F). המלל המדויק כולל "ניקיון ואחזקה".' : 'עני ישירות לבקשת המשתמש. אם המשתמש מבקש פעולה (כמו קביעת פגישה), השתמשי בכלים שלך.'}`
+        content: `תזכורת סופית: היום ה-${dateStr}, השעה ${timeStr}. ${shouldForceOpening ? `השתמשי בדיוק בפורמט הודעת הפתיחה הבא:\n${openingInstruction}` : 'עני ישירות לבקשת המשתמש.'} ${isAskingForOpening ? 'כעת הצג את הודעת הפתיחה המלאה.' : ''}`
       });
 
       // Get Agent
@@ -221,7 +219,9 @@ export async function POST(req: NextRequest) {
       console.log(`Using model: ${agent.model}`);
       
       // Generate response
-      const result = await agent.generate(context);
+      const result = await agent.generate(text || 'שלום', {
+        context: context as any
+      });
       const replyText = result.text;
 
       console.log(`[${APP_VERSION}] Generated reply: "${replyText}"`);
