@@ -252,9 +252,10 @@ export async function POST(req: NextRequest) {
       ];
 
       // Add a final, non-negotiable instruction to ensure the formatting and rules are followed
+      const shouldForceOpening = isAskingForOpening || (!isSuperUser && history.length <= 1);
       context.push({
         role: 'system',
-        content: `תזכורת סופית: היום ה-${dateStr}, השעה ${timeStr}. ${!isVoiceMessage ? 'השתמשי בדיוק בטקסט של הודעת הפתיחה שצוין לעיל (עם 1️⃣, 2️⃣, 3️⃣ ותו \u200F). המלל המדויק כולל "ניקיון ואחזקה" (ללא המילה תחזוקה).' : ''} ${isAskingForOpening ? 'כעת הצג את הודעת הפתיחה המלאה.' : ''}`
+        content: `תזכורת סופית: היום ה-${dateStr}, השעה ${timeStr}. ${shouldForceOpening ? 'השתמשי בדיוק בטקסט של הודעת הפתיחה שצוין לעיל (עם 1️⃣, 2️⃣, 3️⃣ ותו \u200F). המלל המדויק כולל "ניקיון ואחזקה".' : 'עני ישירות לבקשת המשתמש. אם המשתמש מבקש פעולה (כמו קביעת פגישה או הפקת מסמך), השתמשי בכלים שלך.'}`
       });
 
       // Get Agent
