@@ -40,6 +40,9 @@ export const googleCalendar = {
       return response.data;
     } catch (error: any) {
       console.error('Error creating Google Calendar event:', error);
+      if (error.response?.data) {
+        console.error('Detailed Error Response:', JSON.stringify(error.response.data, null, 2));
+      }
       throw error;
     }
   },
