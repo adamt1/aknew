@@ -32,28 +32,31 @@ export async function POST(req: NextRequest) {
       const senderNumber = (rawSender || '').split('@')[0].replace(/\D/g, '').trim();
       const widNumber = (wid || '').split('@')[0].replace(/\D/g, '').trim();
       
-      const superUsers = ['972526672663', '972542619636', '526672663', '542619636'];
-      // Robust super user detection: match exact number OR ends with the last 9 digits (Israel mobile)
+      const superUsers = ['972526672663', '972542619636', '0526672663', '0542619636', '526672663', '542619636'];
+      // Robust super user detection: handles 972, 05, or raw 5x
       const cleanSender = senderNumber.replace(/\D/g, ''); 
-      const isSuperUser = superUsers.some(u => cleanSender === u || (cleanSender.length >= 9 && u.endsWith(cleanSender.slice(-9))));
+      const isSuperUser = superUsers.some(u => 
+        cleanSender === u.replace(/\D/g, '') || 
+        (cleanSender.length >= 9 && u.endsWith(cleanSender.slice(-9))) ||
+        (u.length >= 9 && cleanSender.endsWith(u.slice(-9)))
+      );
 
       console.log(`[AUTH_DEBUG] chatId=${chatId}, senderNumber="${senderNumber}", isSuperUser=${isSuperUser}`);
 
       // Handle Human Intervention (Pausing the bot)
       if (isIncoming && isSuperUser) {
-        // This block is reserved for owner commands, e.g., "Mute", "Unmute", "Status"
-        // For now, it's empty as per the instruction, but it prevents the owner from being
-        // trapped in the opening message flow or other filters.
+        // Reserved for owner commands
       }
 
-      // Contact Filter Logic (Only respond to SuperUser, Unsaved Numbers, or Saved contacts with 'משרד'/'ועד בית')
+      // Contact Filter Logic - ALWAYS fetch contact info if incoming message
       let contactName = '';
-      if (isIncoming && !isSuperUser) {
+      if (isIncoming) {
         try {
           const contactInfo = await greenApi.getContactInfo(chatId);
           contactName = contactInfo.contactName || '';
+          console.log(`[DEBUG] Fetched contact name: "${contactName}" for ${chatId}`);
         } catch (e) {
-          console.warn(`Failed to get contact info for ${chatId}, assuming unsaved.`);
+          console.warn(`Failed to get contact info for ${chatId}.`);
         }
       }
 
@@ -262,10 +265,10 @@ export async function POST(req: NextRequest) {
         })))
       ];
 
-      // Add a final, non-negotiable instruction to ensure the formatting and rules are followed
+      // ONLY force the opening message if explicitly asked, or if it's a new NON-OWNER chat.
       const shouldForceOpening = isAskingForOpening || (!isSuperUser && history.length === 0);
       
-      console.log(`[LOG] shouldForceOpening=${shouldForceOpening}, historyLength=${history.length}, isSuperUser=${isSuperUser}`);
+      console.log(`[FLOW] shouldForceOpening=${shouldForceOpening}, history=${history.length}, isSuperUser=${isSuperUser}`);
 
       context.push({
         role: 'system',
