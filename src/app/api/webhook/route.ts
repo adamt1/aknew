@@ -5,13 +5,15 @@ import { saveMessage, getHistory, isBotActive, setBotStatus } from '@/lib/supaba
 import { elevenLabs } from '@/lib/elevenlabs';
 
 export async function POST(req: NextRequest) {
+  const APP_VERSION = 'v3.5-DIAGNOSTIC';
+  console.log(`[${APP_VERSION}] Webhook received at ${new Date().toISOString()}`);
+
   try {
     const body = await req.json();
     console.log('FULL WEBHOOK BODY:', JSON.stringify(body, null, 2));
     // Log the type of webhook received
     const type = body.typeWebhook;
-    const APP_VERSION = 'v2.2-voice';
-    console.log(`[${APP_VERSION}] Webhook received: ${type}`);
+    // console.log(`[${APP_VERSION}] Webhook received: ${type}`); // This line is replaced by the new one above
 
     // Handle incoming and outgoing text messages
     const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
