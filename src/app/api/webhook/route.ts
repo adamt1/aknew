@@ -32,10 +32,13 @@ export async function POST(req: NextRequest) {
       const senderNumber = (rawSender || '').split('@')[0].replace(/\D/g, '').trim();
       const widNumber = (wid || '').split('@')[0].replace(/\D/g, '').trim();
       
-      const superUsers = ['972526672663', '972542619636'];
+      const superUsers = ['972526672663', '972542619636', '0526672663', '0542619636', '526672663', '542619636'];
       // Robust super user detection
-      const cleanSender = senderNumber.replace(/\D/g, ''); 
-      const isSuperUser = superUsers.some(u => cleanSender.includes(u)) || (widNumber && cleanSender.includes(widNumber));
+      const cleanSender = (senderData?.sender || '').replace(/\D/g, ''); 
+      const isSuperUser = superUsers.some(u => 
+        cleanSender === u || 
+        (cleanSender.length >= 9 && u.endsWith(cleanSender.slice(-9)))
+      ) || (widNumber && cleanSender.includes(widNumber));
 
       console.log(`[AUTH_DEBUG] type=${type}, senderNumber="${senderNumber}", cleanSender="${cleanSender}", widNumber="${widNumber}", isSuperUser=${isSuperUser}`);
 
@@ -220,10 +223,11 @@ export async function POST(req: NextRequest) {
         })))
       ];
 
-      // Add a final, non-negotiable instruction to ensure the formatting and rules are followed
+      // Add a final instruction for formatting, but only force the opening if it's a new non-owner chat
+      const shouldForceOpening = !isSuperUser && history.length === 0;
       context.push({
         role: 'system',
-        content: `תזכורת סופית: היום ה-${dateStr}, השעה ${timeStr}. ${!isVoiceMessage ? 'השתמשי בדיוק בטקסט של הודעת הפתיחה שצוין לעיל (עם 1️⃣, 2️⃣, 3️⃣ ותו \u200F). המלל המדויק כולל "ניקיון ואחזקה" (ללא המילה תחזוקה).' : ''} ${isAskingForOpening ? 'כעת הצג את הודעת הפתיחה המלאה.' : ''}`
+        content: `תזכורת סופית: היום ה-${dateStr}, השעה ${timeStr}. ${shouldForceOpening ? 'השתמשי בדיוק בטקסט של הודעת הפתיחה שצוין לעיל (עם 1️⃣, 2️⃣, 3️⃣ ותו \u200F). המלל המדויק כולל "ניקיון ואחזקה".' : 'עני ישירות לבקשת המשתמש. אם המשתמש מבקש פעולה (כמו קביעת פגישה), השתמשי בכלים שלך.'}`
       });
 
       // Get Agent
