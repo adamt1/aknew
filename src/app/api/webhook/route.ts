@@ -5,7 +5,7 @@ import { saveMessage, getHistory, isBotActive, setBotStatus } from '@/lib/supaba
 import { elevenLabs } from '@/lib/elevenlabs';
 
 export async function POST(req: NextRequest) {
-  const APP_VERSION = 'v3.5-DIAGNOSTIC';
+  const APP_VERSION = 'v3.6-FINAL-FIX';
   console.log(`[${APP_VERSION}] Webhook received at ${new Date().toISOString()}`);
 
   try {
@@ -151,8 +151,12 @@ export async function POST(req: NextRequest) {
       const shouldForceOpening = !isSuperUser && history.length === 0;
 
       // Ensure we use Israel TimeZone specifically
-      const dateStr = now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-      const timeStr = now.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit' });
+      // Using en-GB for 'DD/MM/YYYY' format reliably
+      const dateStrHe = now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const timeStrHe = now.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
+      
+      const debugTime = now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' });
+      console.log(`[TIME_DEBUG] LocalTime (Jerusalem): ${debugTime}`);
       
       // Force Loop Break: If the user asks for the opening message, we ignore history to prevent copy-pasting the old format
       const isAskingForOpening = text?.includes('הודעת פתיחה') || text?.includes('הודעת הפתיחה');
@@ -163,8 +167,8 @@ export async function POST(req: NextRequest) {
       // Standard Formatting Rules for ALL Users
       const globalStandard = `
         הנחיה גורפת לזמנים - חובה לקרוא לפני כל תשובה:
-        היום הוא ${dateStr}. השעה היא ${timeStr}.
-        ערכים טכניים מדויקים:
+        היום הוא ${dateStrHe}. השעה היא ${timeStrHe}.
+        (זמן ירושלים מדויק: ${debugTime})
         - ISO-8601: ${isoStr}
         - Unix Epoch: ${epochSeconds}
         - יום בשבוע: ${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long' })}
@@ -222,7 +226,7 @@ export async function POST(req: NextRequest) {
 
       context.push({
         role: 'system',
-        content: `תזכורת סופית: היום ה-${dateStr}, השעה ${timeStr}. ${shouldForceOpening ? `השתמשי בדיוק בפורמט הודעת הפתיחה הבא:\n${openingInstruction}` : 'עני ישירות לבקשת המשתמש.'} ${isAskingForOpening ? 'כעת הצג את הודעת הפתיחה המלאה.' : ''}`
+        content: `תזכורת סופית: היום ה-${dateStrHe}, השעה ${timeStrHe}. ${shouldForceOpening ? `השתמשי בדיוק בפורמט הודעת הפתיחה הבא:\n${openingInstruction}` : 'עני ישירות לבקשת המשתמש.'} ${isAskingForOpening ? 'כעת הצג את הודעת הפתיחה המלאה.' : ''}`
       });
 
       // Get Agent
