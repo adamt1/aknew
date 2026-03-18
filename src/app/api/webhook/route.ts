@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
       const superUsers = ['972526672663', '972542619636'];
       // Robust super user detection
       const cleanSender = senderNumber.replace(/\D/g, ''); 
-      const isSuperUser = superUsers.some(u => cleanSender.includes(u)) || (widNumber && cleanSender.includes(widNumber));
+      const isSuperUser = superUsers.some(u => cleanSender === u) || (widNumber && cleanSender === widNumber);
 
       console.log(`[AUTH_DEBUG] type=${type}, senderNumber="${senderNumber}", cleanSender="${cleanSender}", widNumber="${widNumber}", isSuperUser=${isSuperUser}`);
 
@@ -62,10 +62,12 @@ export async function POST(req: NextRequest) {
       // Explicit block for specific names (Family, Friends, etc.)
       const pushName = senderData?.senderName || '';
       const blacklist = ['קארין', 'Karin', 'אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי'];
-      const isExplicitIgnored = blacklist.some(name => pushName.includes(name));
+      const isExplicitIgnored = blacklist.some(name => 
+        (pushName && pushName.includes(name)) || (contactName && contactName.includes(name))
+      );
       
       if (isIncoming && !isSuperUser && isExplicitIgnored) {
-        console.log(`[FILTER] Ignoring explicitly blocked name "${pushName}" (${chatId}).`);
+        console.log(`[FILTER] Ignoring explicitly blocked name "${pushName}" / "${contactName}" (${chatId}).`);
         return NextResponse.json({ status: 'ignored_explicit_contact' });
       }
 
