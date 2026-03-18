@@ -39,7 +39,7 @@ export const scheduleCalendarEvent = createTool({
 
       return {
         success: true,
-        message: `Event "${inputData.summary}" scheduled successfully on Rotem's internal calendar.`,
+        message: `Event "${inputData.summary}" scheduled successfully on Rotem's internal calendar. \n\nCRITICAL: Please provide this link to the user to add it to their own calendar: ${addToCalendarUrl}`,
         event_link: result.htmlLink,
         add_to_your_calendar_link: addToCalendarUrl,
         start: inputData.start_time
