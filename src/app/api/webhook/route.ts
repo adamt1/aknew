@@ -39,18 +39,39 @@ export async function POST(req: NextRequest) {
 
       console.log(`[AUTH_DEBUG] type=${type}, senderNumber="${senderNumber}", cleanSender="${cleanSender}", widNumber="${widNumber}", isSuperUser=${isSuperUser}`);
 
-      // Karin Exclusion Logic: Don't respond to Karin unless she's messaging herself
-      const senderName = senderData?.senderName || '';
-      const isKarin = senderName.includes('קארין') || senderName.includes('Karin');
-      const isSelfMessage = senderData?.sender === wid;
-
-      if (isKarin && !isSelfMessage && isIncoming) {
-        console.log(`Ignoring message from Karin (${chatId}) to prevent interference.`);
-        return NextResponse.json({ status: 'ignored_karin' });
+      // Contact Filter Logic (Only respond to SuperUser, Unsaved Numbers, or Saved contacts with 'משרד'/'ועד בית')
+      let contactName = '';
+      if (isIncoming && !isSuperUser) {
+        try {
+          const contactInfo = await greenApi.getContactInfo(chatId);
+          contactName = contactInfo.contactName || '';
+        } catch (e) {
+          console.warn(`Failed to get contact info for ${chatId}, assuming unsaved.`);
+        }
       }
 
-      // Loop Prevention: Ignore if sender IS the bot itself (wid) UNLESS it's the owner (super user) or Karin messaging herself
-      if (isIncoming && isSelfMessage && !isSuperUser && !isKarin) {
+      const isSavedContact = contactName.trim().length > 0;
+      const isAllowedSavedContact = contactName.includes('משרד') || contactName.includes('ועד בית');
+
+      // We block if it's a saved contact that does not have the allowed keywords.
+      if (isIncoming && !isSuperUser && isSavedContact && !isAllowedSavedContact) {
+         console.log(`[FILTER] Ignoring message from saved contact ${contactName} (${chatId}) because they don't have 'משרד' or 'ועד בית'.`);
+         return NextResponse.json({ status: 'ignored_unauthorized_saved_contact' });
+      }
+
+      // Explicit block for specific names (Family, Friends, etc.)
+      const pushName = senderData?.senderName || '';
+      const blacklist = ['קארין', 'Karin', 'אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי'];
+      const isExplicitIgnored = blacklist.some(name => pushName.includes(name));
+      
+      if (isIncoming && !isSuperUser && isExplicitIgnored) {
+        console.log(`[FILTER] Ignoring explicitly blocked name "${pushName}" (${chatId}).`);
+        return NextResponse.json({ status: 'ignored_explicit_contact' });
+      }
+
+      // Loop Prevention: Ignore if sender IS the bot itself (wid) UNLESS it's the owner (super user)
+      const isSelfMessage = senderData?.sender === wid;
+      if (isIncoming && isSelfMessage && !isSuperUser) {
         console.log(`Ignoring loop message from self: ${wid}`);
         return NextResponse.json({ status: 'ignored_self_loop' });
       }
@@ -76,7 +97,7 @@ export async function POST(req: NextRequest) {
       }
 
       // Human Intervention Logic: If owner sends a message to a user, disable the bot for that thread
-      if (isOutgoing && isSuperUser) {
+      if (isOutgoing && (isSuperUser || type === 'outgoingMessageReceived')) {
         // Only disable if messaging someone else (not testing with self or the bot itself)
         if (chatId !== rawSender && (!wid || !chatId.includes(widNumber))) {
           console.log(`[HUMAN_INTERVENTION] Owner ${senderNumber} messaged ${chatId}. Disabling bot.`);
@@ -84,6 +105,14 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ status: 'bot_disabled_by_owner' });
         }
         console.log(`[HUMAN_INTERVENTION_SKIP] Owner is messaging self or bot instance. No override.`);
+      }
+
+      // Emoji-Only Intervention: If customer sends only emojis, it triggers human intervention
+      const isEmojiOnly = text && /^(\p{Emoji_Presentation}|\p{Emoji_Modifier_Base}|\p{Emoji_Component}|\s)+$/u.test(text);
+      if (isIncoming && isEmojiOnly) {
+        console.log(`[EMOJI_INTERVENTION] Customer sent emoji-only message. Disabling bot for ${chatId}.`);
+        await setBotStatus(chatId, false);
+        return NextResponse.json({ status: 'bot_disabled_by_emoji' });
       }
 
       // Voice message transcription
@@ -137,9 +166,8 @@ export async function POST(req: NextRequest) {
 
       // Fetch history
       const history = await getHistory(chatId);
-      
       // Contact classification
-      const isOfficeOrCommittee = senderName.includes('משרד') || senderName.includes('ועד בית');
+      const isOfficeOrCommittee = contactName.includes('משרד') || contactName.includes('ועד בית');
 
       // Use message timestamp for better accuracy, fallback to server time
       const now = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
@@ -152,16 +180,19 @@ export async function POST(req: NextRequest) {
       // Force Loop Break: If the user asks for the opening message, we ignore history to prevent copy-pasting the old format
       const isAskingForOpening = text?.includes('הודעת פתיחה') || text?.includes('הודעת הפתיחה');
 
-      const isoStr = now.toISOString();
-      const epochSeconds = Math.floor(now.getTime() / 1000);
+      const localIsoDate = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' });
+      const localIsoTime = now.toLocaleTimeString('en-GB', { timeZone: 'Asia/Jerusalem' });
+      const tzOffsetMatch = now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem', timeZoneName: 'shortOffset' }).match(/GMT([+-]\d+)/);
+      const offsetHours = tzOffsetMatch ? tzOffsetMatch[1] : '+02';
+      const offsetStr = `${offsetHours.length === 2 ? offsetHours.charAt(0) + '0' + offsetHours.charAt(1) : offsetHours}:00`;
+      const localIsoStr = `${localIsoDate}T${localIsoTime}${offsetStr}`;
 
       // Standard Formatting Rules for ALL Users
       const globalStandard = `
         הנחיה גורפת לזמנים - חובה לקרוא לפני כל תשובה:
         היום הוא ${dateStr}. השעה היא ${timeStr}.
-        ערכים טכניים מדויקים:
-        - ISO-8601: ${isoStr}
-        - Unix Epoch: ${epochSeconds}
+        ערכים טכניים מדויקים המייצגים את הזמן המקומי בישראל:
+        - ISO-8601 (Local Time): ${localIsoStr}
         - יום בשבוע: ${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long' })}
         
         כל חישוב של "מחר", "אתמול", או "עוד X זמן" חייב להתבסס אך ורק על הנתונים לעיל. אל תסתמכי על שום ידע קודם לגבי התאריך. אם את קובעת פגישה ל"מחר", התאריך חייב להיות היום שאחרי ה-${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', day: 'numeric', month: 'numeric' })}.
@@ -238,6 +269,14 @@ export async function POST(req: NextRequest) {
 
       // Save assistant message
       await saveMessage(chatId, 'assistant', replyText);
+
+      // SHARP HUMAN INTERVENTION CHECK: The AI generation and TTS take time. 
+      // If the owner replied manually *while* we were generating this, we must abort sending!
+      const finalActiveCheck = await isBotActive(chatId);
+      if (!finalActiveCheck) {
+        console.log(`[HUMAN_INTERVENTION_ABORT] Bot became inactive for ${chatId} during generation. Aborting message send.`);
+        return NextResponse.json({ status: 'aborted_due_to_human_intervention' });
+      }
 
       // Send via Green API (Voice or Text)
       if (isVoiceMessage) {
