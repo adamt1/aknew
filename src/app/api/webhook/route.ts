@@ -138,7 +138,7 @@ export async function POST(req: NextRequest) {
 
       // Fetch history
       const history = await getHistory(chatId);
-      console.log(`[LOG] chatId=${chatId}, historyLength=${history.length}, isSuperUser=${isSuperUser}`);
+      console.log(`[${APP_VERSION}] [DIAGNOSTIC] chatId=${chatId}, historyLength=${history.length}, isSuperUser=${isSuperUser}`);
 
       // Use message timestamp for better accuracy, fallback to server time
       const now = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
@@ -194,10 +194,10 @@ export async function POST(req: NextRequest) {
 
       let systemPrompt = '';
       if (isSuperUser) {
-        systemPrompt = `את/ה רותם, סוכנת-על דיגיטלית חכמה. המשתמש הנוכחי הוא אדם (מנהל המערכת).
+        systemPrompt = `את/ה רותם, סייעת דיגיטלית של העסק. המשתמש הנוכחי הוא אדם (מנהל המערכת).
           ${globalStandard}
-          חשוב ביותר: עבור אדם, אין לך שום הגבלה על נושאי השיחה.
-          הסגנון שלך חייב להיות ענייני, מקצועי ומכובד מאוד. ללא מילות חיבה וללא שימוש במילה "בעלים".`;
+          חשוב ביותר: עבור אדם, עני תמיד בצורה ישירה, עניינית ומקצועית בלבד. 
+          אל תציגי את עצמך, אל תצייני את הסטטוס שלך (כמו SUPER_USER_MODE) ואל תשתמשי בברכות פתיחה אלא אם נשאלת.`;
       } else if (isOfficeOrCommittee) {
           systemPrompt = `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה". 
           ${globalStandard}

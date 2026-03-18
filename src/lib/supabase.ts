@@ -6,11 +6,14 @@ const supabaseKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_P
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
 export async function saveMessage(threadId: string, role: string, content: string) {
+  const keyPrefix = (supabaseKey || '').slice(0, 7);
   const { error } = await supabase
     .from('conversation_history')
     .insert([{ thread_id: threadId, role, content }]);
   
-  if (error) console.error('Error saving message:', error);
+  if (error) {
+    console.error(`[SUPABASE_ERROR] saveMessage failed (Key: ${keyPrefix}...):`, error.message, error.details);
+  }
 }
 
 export async function getHistory(threadId: string) {
