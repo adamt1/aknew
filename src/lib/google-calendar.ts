@@ -9,11 +9,12 @@ if (!clientEmail || !privateKey) {
   console.warn('Google Calendar credentials not fully configured (GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY)');
 }
 
-const auth = new google.auth.JWT({
-  email: clientEmail,
-  key: privateKey,
-  scopes: SCOPES,
-});
+const auth = new google.auth.JWT(
+  clientEmail,
+  undefined,
+  privateKey,
+  SCOPES
+);
 
 export const calendar = google.calendar({ version: 'v3', auth });
 

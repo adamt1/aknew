@@ -58,21 +58,6 @@ export class GreenApiService {
     return response.json();
   }
 
-  async getContactInfo(chatId: string) {
-    const url = this.getUrl('getContactInfo');
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ chatId }),
-    });
-    if (!response.ok) {
-      throw new Error('Failed to get contact info');
-    }
-    return response.json();
-  }
-
   async downloadFile(downloadUrl: string): Promise<Buffer> {
     const response = await fetch(downloadUrl);
     if (!response.ok) {

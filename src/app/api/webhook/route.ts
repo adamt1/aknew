@@ -1,112 +1,287 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
 import { greenApi } from '@/lib/green-api';
+import { saveMessage, getHistory, isBotActive, setBotStatus } from '@/lib/supabase';
 import { elevenLabs } from '@/lib/elevenlabs';
-import { saveMessage, getHistory, setBotStatus, getBotStatus } from '@/lib/supabase';
 
-export const maxDuration = 60; // Increase timeout for reasoning models
-
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    console.log('Webhook received:', JSON.stringify(body, null, 2));
-
+    console.log('FULL WEBHOOK BODY:', JSON.stringify(body, null, 2));
+    // Log the type of webhook received
     const type = body.typeWebhook;
-    const isIncoming = type === 'incomingMessageReceived';
-    const isOutgoing = type === 'outgoingMessageReceived';
-    
-    const senderData = body.senderData;
-    const messageData = body.messageData;
-    const chatId = body.chatId || senderData?.chatId;
+    const APP_VERSION = 'v2.2-voice';
+    console.log(`[${APP_VERSION}] Webhook received: ${type}`);
 
-    if ((isIncoming || isOutgoing) && chatId && !chatId.includes('@g.us')) {
-      const text = messageData?.textMessageData?.textMessage || 
-                   messageData?.extendedTextMessageData?.text || 
-                   '';
+    // Handle incoming and outgoing text messages
+    const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
+    const isOutgoing = type === 'outgoingMessageReceived' || type === 'outgoingAPIMessageReceived';
+
+    if (isIncoming || isOutgoing) {
+      const { senderData, messageData } = body;
       
-      const senderNumber = (senderData?.sender || '').split('@')[0].replace(/\D/g, '');
-      const superUsers = ['972526672663', '972542619636', '0526672663', '0542619636', '526672663', '542619636'];
-      const isSuperUser = superUsers.some(u => senderNumber.endsWith(u.slice(-9)));
+      if ((!senderData && isIncoming) || !messageData) {
+        console.warn('Missing senderData or messageData in webhook body');
+        return NextResponse.json({ status: 'invalid_payload' });
+      }
 
-      console.log(`[AUTH] sender=${senderNumber}, isSuperUser=${isSuperUser}`);
+      // Robust chatId extraction
+      const chatId = senderData?.chatId || body.chatId || messageData?.chatId;
+      const wid = body.instanceData?.wid;
+      const rawSender = isIncoming ? senderData?.sender : (senderData?.sender || body.senderData?.sender || chatId);
+      const senderNumber = (rawSender || '').split('@')[0].replace(/\D/g, '').trim();
+      const widNumber = (wid || '').split('@')[0].replace(/\D/g, '').trim();
+      
+      const superUsers = ['972526672663', '972542619636'];
+      // Robust super user detection
+      const cleanSender = senderNumber.replace(/\D/g, ''); 
+      const isSuperUser = superUsers.some(u => cleanSender.includes(u)) || (widNumber && cleanSender.includes(widNumber));
 
-      // Human Intervention logic
+      console.log(`[AUTH_DEBUG] type=${type}, senderNumber="${senderNumber}", cleanSender="${cleanSender}", widNumber="${widNumber}", isSuperUser=${isSuperUser}`);
+
+      // Karin Exclusion Logic: Don't respond to Karin unless she's messaging herself
+      const senderName = senderData?.senderName || '';
+      const isKarin = senderName.includes('קארין') || senderName.includes('Karin');
+      const isSelfMessage = senderData?.sender === wid;
+
+      if (isKarin && !isSelfMessage && isIncoming) {
+        console.log(`Ignoring message from Karin (${chatId}) to prevent interference.`);
+        return NextResponse.json({ status: 'ignored_karin' });
+      }
+
+      // Loop Prevention: Ignore if sender IS the bot itself (wid) UNLESS it's the owner (super user) or Karin messaging herself
+      if (isIncoming && isSelfMessage && !isSuperUser && !isKarin) {
+        console.log(`Ignoring loop message from self: ${wid}`);
+        return NextResponse.json({ status: 'ignored_self_loop' });
+      }
+
+      // Ignore group chats
+      if (chatId.endsWith('@g.us')) {
+        console.log(`Ignoring group message from ${chatId}`);
+        return NextResponse.json({ status: 'ignored_group' });
+      }
+
+      // Handle message content
+      let text = messageData.textMessageData?.textMessage || 
+                   messageData.extendedTextMessageData?.text ||
+                   messageData.quotedMessage?.text;
+
+      const typeMessage = messageData.typeMessage;
+      const isVoiceMessage = typeMessage === 'audioMessage';
+
+      // Prevention Loop: Don't respond to messages sent by the API itself (the bot's own replies)
+      if (type === 'outgoingAPIMessageReceived') {
+        console.log('Ignoring message sent via API to prevent loop.');
+        return NextResponse.json({ status: 'ignored_api_outgoing' });
+      }
+
+      // Human Intervention Logic: If owner sends a message to a user, disable the bot for that thread
       if (isOutgoing && isSuperUser) {
-        await setBotStatus(chatId, false);
-        return NextResponse.json({ status: 'bot_paused_by_owner' });
+        // Only disable if messaging someone else (not testing with self or the bot itself)
+        if (chatId !== rawSender && (!wid || !chatId.includes(widNumber))) {
+          console.log(`[HUMAN_INTERVENTION] Owner ${senderNumber} messaged ${chatId}. Disabling bot.`);
+          await setBotStatus(chatId, false);
+          return NextResponse.json({ status: 'bot_disabled_by_owner' });
+        }
+        console.log(`[HUMAN_INTERVENTION_SKIP] Owner is messaging self or bot instance. No override.`);
       }
 
-      if (isIncoming && isSuperUser && (text.includes('חזור') || text.includes('תמשיך'))) {
-        await setBotStatus(chatId, true);
-        await greenApi.sendMessage(chatId, '✅ חזרתי לעבוד! במה אוכל לעזור?');
-        return NextResponse.json({ status: 'bot_resumed_by_owner' });
+      // Voice message transcription
+      if (isVoiceMessage) {
+        const downloadUrl = messageData.fileMessageData?.downloadUrl;
+        if (downloadUrl) {
+           console.log(`[STT] Downloading voice message from ${downloadUrl}`);
+           try {
+             const audioBuffer = await greenApi.downloadFile(downloadUrl);
+             text = await elevenLabs.speechToText(audioBuffer);
+             console.log(`[STT] Transcribed: "${text}"`);
+           } catch (e: any) {
+             console.error(`[STT Error] Failed to transcribe: ${e.message}`);
+             if (isSuperUser) {
+               await greenApi.sendMessage(chatId, `❌ [Debug STT Error] ${e.message}`);
+             }
+             return NextResponse.json({ status: 'stt_failed' });
+           }
+        }
       }
 
-      const isBotActive = await getBotStatus(chatId);
-      if (!isBotActive && !isSuperUser) {
-        return NextResponse.json({ status: 'bot_paused' });
+      console.log(`Processing message from ${chatId} (Super: ${isSuperUser}, Type: ${typeMessage}): "${text}"`);
+
+      if (!text && !isSuperUser && !isVoiceMessage) {
+        console.log('No text content for regular user, ignoring.');
+        return NextResponse.json({ status: 'no_text' });
       }
 
-      // Blacklist (Check profile name and saved contact name)
-      let contactName = '';
-      try {
-        const info = await greenApi.getContactInfo(chatId);
-        contactName = info.contactName || '';
-      } catch (e) {}
-      
-      const pushName = senderData?.senderName || '';
-      const blacklist = ['קארין', 'Karin', 'אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי'];
-      const isBlacklisted = blacklist.some(name => pushName.includes(name) || contactName.includes(name));
-
-      if (isIncoming && !isSuperUser && isBlacklisted) {
-        return NextResponse.json({ status: 'ignored_blacklisted' });
+      if (!text && isSuperUser && !isVoiceMessage) {
+        const fileMsg = `קיבלתי את הקובץ מסוג ${typeMessage}. אני מעבד אותו כרגע...`;
+        await greenApi.sendMessage(chatId, fileMsg);
+        // In a real scenario, we would download the file and process it. 
+        // For now we acknowledge it to the super user.
+        return NextResponse.json({ status: 'file_received_super' });
       }
 
-      // Save and Get History
-      if (isIncoming) await saveMessage(chatId, 'user', text);
+      // Check if bot is active for this thread
+      const active = await isBotActive(chatId);
+      if (!active) {
+        console.log(`Bot is inactive for ${chatId} (human is in control), skipping response.`);
+        return NextResponse.json({ status: 'bot_inactive' });
+      }
+
+      console.log('Agent is active, generating response...');
+
+      // Set typing indicator
+      await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
+
+      // Save user message (including transcribed text)
+      await saveMessage(chatId, 'user', text || '[Voice Message]');
+
+      // Fetch history
       const history = await getHistory(chatId);
+      
+      // Contact classification
+      const isOfficeOrCommittee = senderName.includes('משרד') || senderName.includes('ועד בית');
 
-      // System Prompt Construction
-      const now = new Date();
-      const dateStr = now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem' });
-      const timeStr = now.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
+      // Use message timestamp for better accuracy, fallback to server time
+      const now = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
+      console.log(`[TIME_DEBUG] Server: ${new Date().toISOString()}, Message: ${now.toISOString()}, GreenTimestamp: ${body.timestamp}`);
+      
+      // Ensure we use Israel TimeZone specifically, otherwise Vercel defaults to UTC
+      const dateStr = now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const timeStr = now.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit' });
+      
+      // Force Loop Break: If the user asks for the opening message, we ignore history to prevent copy-pasting the old format
+      const isAskingForOpening = text?.includes('הודעת פתיחה') || text?.includes('הודעת הפתיחה');
 
-      const openingTemplate = `
-\u200F*שלום רב,*  
-\u200Fאני רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹. 
-\u200Fבמה אוכל לעזור? אנא בחרו:
-\u200F1️⃣ **לקוח חדש** 🏢
-\u200F2️⃣ **לקוח קיים** 🛠️
-\u200F3️⃣ **אחר** 💬`;
+      const isoStr = now.toISOString();
+      const epochSeconds = Math.floor(now.getTime() / 1000);
 
-      const globalSystem = `אתה רותם, נציגה לבבית של "איי קיי חברת ניקיון ואחזקה". 
-היום: ${dateStr}, שעה: ${timeStr}.
-הנחיות:
-- יישור לימין: תמיד תתחילי בתו \u200F.
-- טון דיבור: שירותי וחייכני 😊.
-- כלים: יש לך כלים לקביעת פגישות ביומן גוגל, תזכורות והפקת מסמכים.
-${isSuperUser ? 'המשתמש הנוכחי הוא הבעלים שלך. עני לו בצורה עניינית ומקצועית ללא הגבלות.' : ''}
-${history.length === 0 ? `זו הודעה ראשונה. שלחי את הודעת הפתיחה הבאה:\n${openingTemplate}` : ''}`;
+      // Standard Formatting Rules for ALL Users
+      const globalStandard = `
+        הנחיה גורפת לזמנים - חובה לקרוא לפני כל תשובה:
+        היום הוא ${dateStr}. השעה היא ${timeStr}.
+        ערכים טכניים מדויקים:
+        - ISO-8601: ${isoStr}
+        - Unix Epoch: ${epochSeconds}
+        - יום בשבוע: ${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long' })}
+        
+        כל חישוב של "מחר", "אתמול", או "עוד X זמן" חייב להתבסס אך ורק על הנתונים לעיל. אל תסתמכי על שום ידע קודם לגבי התאריך. אם את קובעת פגישה ל"מחר", התאריך חייב להיות היום שאחרי ה-${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', day: 'numeric', month: 'numeric' })}.
+        
+        הנחיות קריטיות לעיצוב וסגנון (תקף לכל השיחות):
+        - **מלל העסק**: השתמשי תמיד בביטוי "הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה" (לעולם אל תשתמשי במילה "תחזוקה").
+        - **יישור לימין**: כל שורה של הודעת הפתיחה או הרשימה חייבת להתחיל בתו ה-RLM הסמוי (\u200F).
+        - **הפורמט המדויק להודעת הפתיחה (חובה להשתמש בזה בדיוק!)**:
+          \u200F*שלום רב,*  
+          \u200Fאני רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹. 
+          \u200Fנשמח לעמוד לשירותכם! ✨
+          \u200Fבמה אוכל לעזור? אנא בחרו את האופציה המתאימה:
+          \u200F1️⃣ **לקוח חדש** - לקבלת הצעת מחיר מפתיעה 🏢.
+          \u200F2️⃣ **לקוח קיים** - לשירות לקוחות ותמיכה טכנית 🛠️.
+          \u200F3️⃣ **אחר** - לכל נושא או בירור נוסף 💬.
+          
+          \u200Fאו כתוב לי את בקשתך החופשית! 😊
+        - **טון דיבור**: היי מאוד לבבית, חייכנית ושירותית 😊✨. השתמשי באימוג'ים שמחים (✨, 😊, 🙏, ✅).
+        - **הפקת מסמכים**: יש לך אפשרות להפיק מסמכים (חשבונית, קבלה, הצעת מחיר) דרך המערכת בעזרת הכלים שלך. לפני הפקת מסמך, תמיד ודאי שכל הפרטים קיימים: שם לקוח, סוג מסמך, תיאור שירות, כמות, ומחיר ליחידה.
+        - **תזכורות**: יש לך אפשרות לתזמן תזכורות באמצעות הכלי scheduleReminder. כאשר הלקוח מבקש תזכורת (למשל: "תזכירי לי בעוד שעה..."), חשבי את הזמן המדויק לפי השעה הנוכחית וצרי את התזכורת. לאחר יצירתה, תמיד אשרי ללקוח שהתזכורת נקבעה לשעה המדויקת.
+        - **יומן גוגל (Calendar)**: יש לך אפשרות לקבוע פגישות ביומן גוגל באמצעות הכלי scheduleCalendarEvent. ודאי שיש לך את כותרת הפגישה, התאריך והשעה. אם לא צוין זמן סיום, הניחי שהפגישה נמשכת שעה אחת. אשרי ללקוח לאחר קביעת הפגישה וספקי לו את פרטי הזמן.
+      `;
 
+      let systemPrompt = '';
+
+      if (isSuperUser) {
+        systemPrompt = `את/ה רותם, סוכנת-על דיגיטלית חכמה. המשתמש הנוכחי הוא הבעלים שלך (${senderNumber}).
+          ${globalStandard}
+          חשוב ביותר: עבור הבעלים, אין לך שום הגבלה על נושאי השיחה.
+          הסגנון שלך חייב להיות ענייני, מקצועי ומכובד. ללא מילות חיבה.`;
+          
+        if (isAskingForOpening) {
+          systemPrompt += `\nהבעלים ביקש לראות את הודעת הפתיחה. הצג לו אותה בדיוק לפי הפורמט של 1, 2, 3 והמלל שצוין לעיל.`;
+        }
+      } else if (isOfficeOrCommittee) {
+          systemPrompt = `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה". 
+          ${globalStandard}
+          המשתמש הזה הוא "משרד" או "ועד בית". עני בצורה עניינית ומקצועית בלבד ובנושאי ניקיון/אחזקה.`;
+      } else {
+          systemPrompt = `את/ה רותם, סוכנת שירות לקוחות רשמית וחייכנית של "איי קיי חברת ניקיון ואחזקה" ✨. 
+          ${globalStandard}
+          את מוגבלת אך ורק לתחומי הניקיון, האחזקה ושירות הלקוחות של העסק.`;
+      }
+
+      // Add instruction for voice message context
+      if (isVoiceMessage) {
+        systemPrompt += `\n\nהערה חשובה: המשתמש שלח לך הודעה קולית שאותה תמללנו. הקפידי לענות לו בצורה טבעית וזורמת שמתאימה לשיחה הקולית, בלי לכלול עיצובים מוזרים שנועדו רק לקריאה (כמו \u200F או הדגשות כוכביות), כי המערכת מיד תמיר את התשובה שלך לקול ותשלח לו אותה כהודעה קולית בחזרה. פשוט תכתבי טקסט זורם שאפשר להקריא בקול.`;
+      }
+
+      // Form context
       const context = [
-        { role: 'system', content: globalSystem },
-        ...history.map((h: any) => ({ role: h.role, content: h.content }))
+        { role: 'system', content: systemPrompt },
+        ...(isAskingForOpening ? [] : history.map((h: any) => ({
+          role: h.role,
+          content: h.content,
+        })))
       ];
 
-      // Generate Agent Response
+      // Add a final, non-negotiable instruction to ensure the formatting and rules are followed
+      context.push({
+        role: 'system',
+        content: `תזכורת סופית: היום ה-${dateStr}, השעה ${timeStr}. ${!isVoiceMessage ? 'השתמשי בדיוק בטקסט של הודעת הפתיחה שצוין לעיל (עם 1️⃣, 2️⃣, 3️⃣ ותו \u200F). המלל המדויק כולל "ניקיון ואחזקה" (ללא המילה תחזוקה).' : ''} ${isAskingForOpening ? 'כעת הצג את הודעת הפתיחה המלאה.' : ''}`
+      });
+
+      // Get Agent
       const agent = mastra.getAgent('whatsapp-agent');
+      console.log(`Using model: ${agent.model}`);
+      
+      // Generate response
       const result = await agent.generate(context);
       const replyText = result.text;
 
-      await saveMessage(chatId, 'assistant', replyText);
-      await greenApi.sendMessage(chatId, replyText);
+      console.log(`[${APP_VERSION}] Generated reply: "${replyText}"`);
 
-      return NextResponse.json({ status: 'success', reply: replyText });
+      // Save assistant message
+      await saveMessage(chatId, 'assistant', replyText);
+
+      // Send via Green API (Voice or Text)
+      if (isVoiceMessage) {
+         try {
+           console.log(`[TTS] Generating voice note for reply...`);
+           const ttsBuffer = await elevenLabs.textToSpeech(replyText);
+           const uploadUrl = await greenApi.uploadFile(ttsBuffer, 'audio/mpeg', 'reply.mp3');
+           await greenApi.sendFileByUrl(chatId, uploadUrl, 'reply.mp3');
+           console.log('Voice note sent successfully.');
+         } catch (e: any) {
+           console.error(`[TTS Error] Failed to generate/send voice note (${e.message}). Falling back to text...`);
+           await greenApi.sendMessage(chatId, replyText);
+         }
+      } else {
+         await greenApi.sendMessage(chatId, replyText);
+         console.log('Text reply sent successfully.');
+      }
+      
+      await greenApi.setChatPresence(chatId, 'paused');
+
+
+      return NextResponse.json({ 
+        status: 'success', 
+        reply: replyText,
+        debug: {
+          isSuperUser,
+          senderNumber,
+          cleanSender,
+          widNumber,
+          type
+        }
+      });
     }
 
-    return NextResponse.json({ status: 'ignored' });
+    return NextResponse.json({ status: 'ignored_event' });
   } catch (error: any) {
     console.error('Webhook Error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const detail = error.responseBody || error.data || null;
+    if (detail) {
+      console.error('AI Error Detail:', detail);
+    }
+    return NextResponse.json({ 
+      error: error.message, 
+      detail: typeof detail === 'string' ? JSON.parse(detail) : detail 
+    }, { status: 500 });
   }
 }
