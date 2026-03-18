@@ -33,14 +33,20 @@ export async function POST(req: NextRequest) {
       const widNumber = (wid || '').split('@')[0].replace(/\D/g, '').trim();
       
       const superUsers = ['972526672663', '972542619636', '0526672663', '0542619636', '526672663', '542619636'];
-      // Robust super user detection
-      const cleanSender = (senderData?.sender || '').replace(/\D/g, ''); 
-      const isSuperUser = superUsers.some(u => 
-        cleanSender === u || 
-        (cleanSender.length >= 9 && u.endsWith(cleanSender.slice(-9)))
-      ) || (widNumber && cleanSender.includes(widNumber));
+      // Ultra-Robust super user detection
+      const rawSenderClean = (rawSender || '').replace(/\D/g, '');
+      const senderDataClean = (senderData?.sender || '').replace(/\D/g, '');
+      const chatIdClean = chatId.replace(/\D/g, '');
 
-      console.log(`[AUTH_DEBUG] type=${type}, senderNumber="${senderNumber}", cleanSender="${cleanSender}", widNumber="${widNumber}", isSuperUser=${isSuperUser}`);
+      const isSuperUser = superUsers.some(u => 
+        rawSenderClean.includes(u) || 
+        senderDataClean.includes(u) || 
+        chatIdClean.includes(u) ||
+        (rawSenderClean.length >= 9 && u.endsWith(rawSenderClean.slice(-9)))
+      ) || (widNumber && (rawSenderClean.includes(widNumber) || chatIdClean.includes(widNumber)));
+
+      console.log(`[DIAGNOSTIC] isSuperUser=${isSuperUser}, chatId=${chatId}, rawSender=${rawSender}, cleanRaw=${rawSenderClean}`);
+      console.log(`[DIAGNOSTIC] SupabaseKeyPrefix=${(process.env.SUPABASE_SERVICE_ROLE_KEY || 'MISSING').slice(0, 10)}...`);
 
       // Ignore group chats
       if (chatId.endsWith('@g.us')) {
@@ -53,19 +59,22 @@ export async function POST(req: NextRequest) {
       try {
         const contactInfo = await greenApi.getContactInfo(chatId);
         contactName = contactInfo.contactName || '';
-        console.log(`[FILTER_DEBUG] Contact Name for ${chatId}: "${contactName}"`);
+        console.log(`[DIAGNOSTIC] Contact Name for ${chatId}: "${contactName}"`);
       } catch (e) {
-        console.warn(`Failed to fetch contact info for ${chatId}`);
+        // Fallback to senderName from webhook
+        contactName = senderData?.senderName || '';
+        console.warn(`[DIAGNOSTIC] Failed to fetch contact info, using senderName: "${contactName}"`);
       }
 
       const isOfficeOrCommittee = contactName.includes('משרד') || contactName.includes('ועד בית');
       const isNewNumber = !contactName || contactName.trim() === ''; 
       
-      // STRICT FILTERING RULES:
+      // STRICT FILTERING RULES
+      // NOTE: We only filter INCOMING messages for regular users
       const shouldIgnore = !isSuperUser && !isNewNumber && !isOfficeOrCommittee;
 
       if (isIncoming && shouldIgnore) {
-        console.log(`[FILTER] Ignoring message from "${contactName}" (${chatId}) - Not a target contact.`);
+        console.log(`[FILTER] Ignoring "${contactName}" (${chatId}) - Not Target (Super: ${isSuperUser}, New: ${isNewNumber}, Office: ${isOfficeOrCommittee})`);
         return NextResponse.json({ status: 'ignored_by_filter' });
       }
 
@@ -255,7 +264,7 @@ export async function POST(req: NextRequest) {
         debug: {
           isSuperUser,
           senderNumber,
-          cleanSender,
+          cleanRaw: rawSenderClean,
           widNumber,
           type
         }
