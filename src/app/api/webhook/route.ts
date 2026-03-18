@@ -42,26 +42,39 @@ export async function POST(req: NextRequest) {
 
       console.log(`[AUTH_DEBUG] type=${type}, senderNumber="${senderNumber}", cleanSender="${cleanSender}", widNumber="${widNumber}", isSuperUser=${isSuperUser}`);
 
-      // Karin Exclusion Logic: Don't respond to Karin unless she's messaging herself
-      const senderName = senderData?.senderName || '';
-      const isKarin = senderName.includes('קארין') || senderName.includes('Karin');
-      const isSelfMessage = senderData?.sender === wid;
-
-      if (isKarin && !isSelfMessage && isIncoming) {
-        console.log(`Ignoring message from Karin (${chatId}) to prevent interference.`);
-        return NextResponse.json({ status: 'ignored_karin' });
-      }
-
-      // Loop Prevention: Ignore if sender IS the bot itself (wid) UNLESS it's the owner (super user) or Karin messaging herself
-      if (isIncoming && isSelfMessage && !isSuperUser && !isKarin) {
-        console.log(`Ignoring loop message from self: ${wid}`);
-        return NextResponse.json({ status: 'ignored_self_loop' });
-      }
-
       // Ignore group chats
       if (chatId.endsWith('@g.us')) {
         console.log(`Ignoring group message from ${chatId}`);
         return NextResponse.json({ status: 'ignored_group' });
+      }
+
+      // Fetch contact name for classification
+      let contactName = '';
+      try {
+        const contactInfo = await greenApi.getContactInfo(chatId);
+        contactName = contactInfo.contactName || '';
+        console.log(`[FILTER_DEBUG] Contact Name for ${chatId}: "${contactName}"`);
+      } catch (e) {
+        console.warn(`Failed to fetch contact info for ${chatId}`);
+      }
+
+      const isOfficeOrCommittee = contactName.includes('משרד') || contactName.includes('ועד בית');
+      const isNewNumber = !contactName || contactName.trim() === ''; 
+      
+      // STRICT FILTERING RULES:
+      const shouldIgnore = !isSuperUser && !isNewNumber && !isOfficeOrCommittee;
+
+      if (isIncoming && shouldIgnore) {
+        console.log(`[FILTER] Ignoring message from "${contactName}" (${chatId}) - Not a target contact.`);
+        return NextResponse.json({ status: 'ignored_by_filter' });
+      }
+
+      // Explicit Blacklist (Additional safety)
+      const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי'];
+      const pushName = senderData?.senderName || '';
+      if (isIncoming && !isSuperUser && blacklist.some(name => (pushName && pushName.includes(name)) || (contactName && contactName.includes(name)))) {
+        console.log(`[FILTER] Explicitly ignored blacklisted contact: ${contactName || pushName}`);
+        return NextResponse.json({ status: 'ignored_blacklisted' });
       }
 
       // Handle message content
@@ -72,82 +85,55 @@ export async function POST(req: NextRequest) {
       const typeMessage = messageData.typeMessage;
       const isVoiceMessage = typeMessage === 'audioMessage';
 
-      // Prevention Loop: Don't respond to messages sent by the API itself (the bot's own replies)
+      // Prevention Loop: Don't respond to messages sent by the API itself
       if (type === 'outgoingAPIMessageReceived') {
-        console.log('Ignoring message sent via API to prevent loop.');
         return NextResponse.json({ status: 'ignored_api_outgoing' });
       }
 
-      // Human Intervention Logic: If owner sends a message to a user, disable the bot for that thread
+      // Human Intervention Logic
       if (isOutgoing && isSuperUser) {
-        // Only disable if messaging someone else (not testing with self or the bot itself)
         if (chatId !== rawSender && (!wid || !chatId.includes(widNumber))) {
           console.log(`[HUMAN_INTERVENTION] Owner ${senderNumber} messaged ${chatId}. Disabling bot.`);
           await setBotStatus(chatId, false);
           return NextResponse.json({ status: 'bot_disabled_by_owner' });
         }
-        console.log(`[HUMAN_INTERVENTION_SKIP] Owner is messaging self or bot instance. No override.`);
       }
 
       // Voice message transcription
       if (isVoiceMessage) {
         const downloadUrl = messageData.fileMessageData?.downloadUrl;
         if (downloadUrl) {
-           console.log(`[STT] Downloading voice message from ${downloadUrl}`);
            try {
              const audioBuffer = await greenApi.downloadFile(downloadUrl);
              text = await elevenLabs.speechToText(audioBuffer);
-             console.log(`[STT] Transcribed: "${text}"`);
            } catch (e: any) {
-             console.error(`[STT Error] Failed to transcribe: ${e.message}`);
-             if (isSuperUser) {
-               await greenApi.sendMessage(chatId, `❌ [Debug STT Error] ${e.message}`);
-             }
+             console.error(`[STT Error] ${e.message}`);
              return NextResponse.json({ status: 'stt_failed' });
            }
         }
       }
 
-      console.log(`Processing message from ${chatId} (Super: ${isSuperUser}, Type: ${typeMessage}): "${text}"`);
-
-      if (!text && !isSuperUser && !isVoiceMessage) {
-        console.log('No text content for regular user, ignoring.');
-        return NextResponse.json({ status: 'no_text' });
-      }
-
-      if (!text && isSuperUser && !isVoiceMessage) {
-        const fileMsg = `קיבלתי את הקובץ מסוג ${typeMessage}. אני מעבד אותו כרגע...`;
-        await greenApi.sendMessage(chatId, fileMsg);
-        // In a real scenario, we would download the file and process it. 
-        // For now we acknowledge it to the super user.
-        return NextResponse.json({ status: 'file_received_super' });
-      }
-
       // Check if bot is active for this thread
       const active = await isBotActive(chatId);
-      if (!active) {
-        console.log(`Bot is inactive for ${chatId} (human is in control), skipping response.`);
+      if (!active && !isSuperUser) {
         return NextResponse.json({ status: 'bot_inactive' });
       }
 
-      console.log('Agent is active, generating response...');
-
-      // Set typing indicator
+      // TYPING INDICATOR
       await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
 
-      // Save user message (including transcribed text)
+      // Save user message
       await saveMessage(chatId, 'user', text || '[Voice Message]');
 
       // Fetch history
       const history = await getHistory(chatId);
       
-      // Contact classification
-      const isOfficeOrCommittee = senderName.includes('משרד') || senderName.includes('ועד בית');
-
       // Use message timestamp for better accuracy, fallback to server time
       const now = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
       console.log(`[TIME_DEBUG] Server: ${new Date().toISOString()}, Message: ${now.toISOString()}, GreenTimestamp: ${body.timestamp}`);
       
+      const senderName = pushName || contactName || '';
+
       // Ensure we use Israel TimeZone specifically, otherwise Vercel defaults to UTC
       const dateStr = now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
       const timeStr = now.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit' });
