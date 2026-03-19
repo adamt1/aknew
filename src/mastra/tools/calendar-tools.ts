@@ -10,7 +10,8 @@ export const scheduleCalendarEvent = createTool({
     description: z.string().optional().describe("Optional description or notes for the meeting."),
     start_time: z.string().describe("ISO-8601 start timestamp."),
     end_time: z.string().describe("ISO-8601 end timestamp. Usually 30-60 minutes after start_time if not specified."),
-    calendar_id: z.string().default('primary').describe("The Google Calendar ID. Default is 'primary'.")
+    calendar_id: z.string().default(process.env.GOOGLE_CALENDAR_ID || 'primary').describe("The Google Calendar ID. Default is from GOOGLE_CALENDAR_ID env var, then 'primary'.")
+
   }),
   execute: async (inputData) => {
     try {
