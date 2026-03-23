@@ -5,17 +5,14 @@ import { saveMessage, getHistory, isBotActive, setBotStatus } from '@/lib/supaba
 import { elevenLabs } from '@/lib/elevenlabs';
 
 export async function POST(req: NextRequest) {
-  const APP_VERSION = 'v3.6-FINAL-FIX';
-  console.log(`[${APP_VERSION}] Webhook received at ${new Date().toISOString()}`);
+  const APP_VERSION = 'v4.0-TIMEFIX';
+  console.time(`[${APP_VERSION}] webhook-total`);
 
   try {
     const body = await req.json();
     console.log('FULL WEBHOOK BODY:', JSON.stringify(body, null, 2));
-    // Log the type of webhook received
     const type = body.typeWebhook;
-    // console.log(`[${APP_VERSION}] Webhook received: ${type}`); // This line is replaced by the new one above
 
-    // Handle incoming and outgoing text messages
     const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
     const isOutgoing = type === 'outgoingMessageReceived' || type === 'outgoingAPIMessageReceived';
 
@@ -27,68 +24,50 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ status: 'invalid_payload' });
       }
 
-      // Robust chatId extraction
       const chatId = senderData?.chatId || body.chatId || messageData?.chatId;
       const wid = body.instanceData?.wid;
       const rawSender = isIncoming ? senderData?.sender : (senderData?.sender || body.senderData?.sender || chatId);
-      const senderNumber = (rawSender || '').split('@')[0].replace(/\D/g, '').trim();
+      const rawSenderClean = (rawSender || '').replace(/\D/g, '');
+      const chatIdClean = chatId.replace(/\D/g, '');
       const widNumber = (wid || '').split('@')[0].replace(/\D/g, '').trim();
       
-      const superUsers = ['972526672663', '972542619636', '0526672663', '0542619636', '526672663', '542619636'];
-      // Ultra-Robust super user detection
-      const rawSenderClean = (rawSender || '').replace(/\D/g, '');
-      const senderDataClean = (senderData?.sender || '').replace(/\D/g, '');
-      const chatIdClean = chatId.replace(/\D/g, '');
-
+      const superUsers = ['972526672663', '0526672663', '526672663'];
       const isSuperUser = superUsers.some(u => 
         rawSenderClean.includes(u) || 
-        senderDataClean.includes(u) || 
         chatIdClean.includes(u) ||
         (rawSenderClean.length >= 9 && u.endsWith(rawSenderClean.slice(-9)))
       ) || (widNumber && (rawSenderClean.includes(widNumber) || chatIdClean.includes(widNumber)));
 
-      console.log(`[DIAGNOSTIC] isSuperUser=${isSuperUser}, chatId=${chatId}, rawSender=${rawSender}, cleanRaw=${rawSenderClean}`);
-      console.log(`[DIAGNOSTIC] SupabaseKeyPrefix=${(process.env.SUPABASE_SERVICE_ROLE_KEY || 'MISSING').slice(0, 10)}...`);
-
-      // Ignore group chats
       if (chatId.endsWith('@g.us')) {
         console.log(`Ignoring group message from ${chatId}`);
         return NextResponse.json({ status: 'ignored_group' });
       }
 
-      // Fetch contact name for classification
       let contactName = '';
       try {
         const contactInfo = await greenApi.getContactInfo(chatId);
         contactName = contactInfo.contactName || '';
-        console.log(`[DIAGNOSTIC] Contact Name for ${chatId}: "${contactName}"`);
       } catch (e) {
-        // Fallback to senderName from webhook
         contactName = senderData?.senderName || '';
-        console.warn(`[DIAGNOSTIC] Failed to fetch contact info, using senderName: "${contactName}"`);
       }
 
-      const isOfficeOrCommittee = contactName.includes('משרד') || contactName.includes('ועד בית');
-      const isNewNumber = !contactName || contactName.trim() === ''; 
-      
-      // STRICT FILTERING RULES
-      // NOTE: We only filter INCOMING messages for regular users
-      const shouldIgnore = !isSuperUser && !isNewNumber && !isOfficeOrCommittee;
-
-      if (isIncoming && shouldIgnore) {
-        console.log(`[FILTER] Ignoring "${contactName}" (${chatId}) - Not Target (Super: ${isSuperUser}, New: ${isNewNumber}, Office: ${isOfficeOrCommittee})`);
-        return NextResponse.json({ status: 'ignored_by_filter' });
-      }
-
-      // Explicit Blacklist (Additional safety)
-      const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי'];
       const pushName = senderData?.senderName || '';
-      if (isIncoming && !isSuperUser && blacklist.some(name => (pushName && pushName.includes(name)) || (contactName && contactName.includes(name)))) {
-        console.log(`[FILTER] Explicitly ignored blacklisted contact: ${contactName || pushName}`);
+      const senderName = pushName || contactName || '';
+
+      // Filters
+      const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי', 'קארין'];
+      const blacklistedNumbers = ['972542619636', '0542619636', '542619636'];
+      
+      const isBlacklisted = (isIncoming && !isSuperUser && (
+        blacklist.some(name => (senderName && senderName.includes(name))) ||
+        blacklistedNumbers.some(num => (chatIdClean && chatIdClean.includes(num)))
+      ));
+
+      if (isBlacklisted) {
+        console.log(`[FILTER] Explicitly ignored blacklisted contact: ${senderName} (${chatId})`);
         return NextResponse.json({ status: 'ignored_blacklisted' });
       }
 
-      // Handle message content
       let text = messageData.textMessageData?.textMessage || 
                    messageData.extendedTextMessageData?.text ||
                    messageData.quotedMessage?.text;
@@ -96,21 +75,18 @@ export async function POST(req: NextRequest) {
       const typeMessage = messageData.typeMessage;
       const isVoiceMessage = typeMessage === 'audioMessage';
 
-      // Prevention Loop: Don't respond to messages sent by the API itself
       if (type === 'outgoingAPIMessageReceived') {
         return NextResponse.json({ status: 'ignored_api_outgoing' });
       }
 
-      // Human Intervention Logic
       if (isOutgoing && isSuperUser) {
         if (chatId !== rawSender && (!wid || !chatId.includes(widNumber))) {
-          console.log(`[HUMAN_INTERVENTION] Owner ${senderNumber} messaged ${chatId}. Disabling bot.`);
+          console.log(`[HUMAN_INTERVENTION] Owner messaged ${chatId}. Disabling bot.`);
           await setBotStatus(chatId, false);
           return NextResponse.json({ status: 'bot_disabled_by_owner' });
         }
       }
 
-      // Voice message transcription
       if (isVoiceMessage) {
         const downloadUrl = messageData.fileMessageData?.downloadUrl;
         if (downloadUrl) {
@@ -124,169 +100,165 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Check if bot is active for this thread
+      // Bot Detection
+      const botTypes = ['templateMessage', 'buttonsMessage', 'listMessage', 'buttonsResponseMessage', 'listResponseMessage', 'templateResponseMessage'];
+      const isBotMessageType = botTypes.includes(typeMessage);
+      const isBotInName = senderName.toLowerCase().includes('bot') || senderName.includes('בוט');
+
+      if (isIncoming && (isBotMessageType || isBotInName)) {
+        console.log(`[BOT_DETECTION] Ignoring message from potential bot: "${senderName}" (Type: ${typeMessage})`);
+        return NextResponse.json({ status: 'ignored_bot' });
+      }
+
       const active = await isBotActive(chatId);
       if (!active && !isSuperUser) {
         return NextResponse.json({ status: 'bot_inactive' });
       }
 
-      // TYPING INDICATOR
       await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
-
-      // Save user message
       await saveMessage(chatId, 'user', text || '[Voice Message]');
-
-      // Fetch history
       const history = await getHistory(chatId);
-      console.log(`[${APP_VERSION}] [DIAGNOSTIC] chatId=${chatId}, historyLength=${history.length}, isSuperUser=${isSuperUser}`);
 
-      // Use message timestamp for better accuracy, fallback to server time
-      const now = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
-      console.log(`[TIME_DEBUG] Server: ${new Date().toISOString()}, Message: ${now.toISOString()}, GreenTimestamp: ${body.timestamp}`);
+      // Time Calculations - CRITICAL FIX
+      const messageDate = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
+      const serverDate = new Date();
       
-      const senderName = pushName || contactName || '';
+      const dateStrHe = messageDate.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const timeStrHe = messageDate.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
+      const serverTimeHe = serverDate.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
+      const isSignificantDelay = Math.abs(serverDate.getTime() - messageDate.getTime()) > 3600000; // > 1 hour
 
-      // Force Opening Message decision
-      // We only force it if history is 0 AND it's not a SuperUser
-      const shouldForceOpening = !isSuperUser && history.length === 0;
-
-      // Ensure we use Israel TimeZone specifically
-      // Using en-GB for 'DD/MM/YYYY' format reliably
-      const dateStrHe = now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-      const timeStrHe = now.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
-      
-      const debugTime = now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' });
-      console.log(`[TIME_DEBUG] LocalTime (Jerusalem): ${debugTime}`);
-      
-      // Force Loop Break: If the user asks for the opening message, we ignore history to prevent copy-pasting the old format
-      const isAskingForOpening = text?.includes('הודעת פתיחה') || text?.includes('הודעת הפתיחה');
-
-      const isoStr = now.toISOString();
-      const epochSeconds = Math.floor(now.getTime() / 1000);
-
-      // Standard Formatting Rules for ALL Users
       const globalStandard = `
-        הנחיה גורפת לזמנים - חובה לקרוא לפני כל תשובה:
-        היום הוא ${dateStrHe}. השעה היא ${timeStrHe}.
-        (זמן ירושלים מדויק: ${debugTime})
-        - ISO-8601: ${isoStr}
-        - Unix Epoch: ${epochSeconds}
-        - יום בשבוע: ${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long' })}
-        
-        כל חישוב של "מחר", "אתמול", או "עוד X זמן" חייב להתבסס אך ורק על הנתונים לעיל. אל תסתמכי על שום ידע קודם לגבי התאריך. אם את קובעת פגישה ל"מחר", התאריך חייב להיות היום שאחרי ה-${now.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', day: 'numeric', month: 'numeric' })}.
-        
-        הנחיות קריטיות לעיצוב וסגנון (תקף לכל השיחות):
-        הנחיות קריטיות לעיצוב וסגנון (תקף לכל השיחות):
-        - **מלל העסק**: השתמשי תמיד בביטוי "הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה" (לעולם אל תשתמשי במילה "תחזוקה").
-        - **יישור לימין**: כל שורה של הודעת הפתיחה או הרשימה חייבת להתחיל בתו ה-RLM הסמוי (\u200F).
-        - **טון דיבור**: היי מאוד לבבית, חייכנית ושירותית 😊✨. השתמשי באימוג'ים שמחים (✨, 😊, 🙏, ✅).
-        - **הפקת מסמכים**: יש לך אפשרות להפיק מסמכים (חשבונית, קבלה, הצעת מחיר) בעזרת הכלים שלך.
-        - **תזכורות**: יש לך אפשרות לתזמן תזכורות (scheduleReminder).
-        - **יומן גוגל**: יש לך אפשרות לקבוע פגישות (scheduleCalendarEvent).
+        הנחיות קריטיות לעיצוב וסגנון:
+        - **מלל העסק**: השתמשי תמיד בביטוי "הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה".
+        - **יישור לימין**: כל שורה חייבת להתחיל בתו ה-RLM הסמוי מטקסט (\u200F).
+        - **טון דיבור**: לבבית, חייכנית ושירותית 😊✨. השתמשי באימוג'ים שמחים.
       `;
 
-      const openingInstruction = shouldForceOpening ? `
-\u200F*שלום רב,*  
-\u200Fאני רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹. 
-\u200Fנשמח לעמוד לשירותכם! ✨
-\u200Fבמה אוכל לעזור? אנא בחרו את האופציה המתאימה:
-\u200F1️⃣ **לקוח חדש** - לקבלת הצעת מחיר מפתיעה 🏢.
-\u200F2️⃣ **לקוח קיים** - לשירות לקוחות ותמיכה טכנית 🛠️.
-\u200F3️⃣ **אחר** - לכל נושא או בירור נוסף 💬.
+      const authInstructions = `
+        הנחיות קריטיות (Authoritative Context):
+        - היום הוא יום ${dateStrHe}. 
+        - השעה המקומית כרגע (בישראל): ${serverTimeHe}.
+        - זמן שליחת ההודעה שקיבלת מהלקוח: ${timeStrHe}.
+        ${isSignificantDelay ? '- שימי לב: ההודעה התקבלה בעיכוב משמעותי של מעל שעה. אם רלוונטי, התנצלי על העיכוב בתגובה.' : ''}
+        - תמיד השתמשי בתאריך ובשעה אלו כמקור היחיד והקובע למושגים כמו "היום", "עכשיו", "מחר" וכו'.
+        - השנה היא 2026.
+        
+        סגנון וכללים:
+        ${globalStandard}
+        - שם השולח/ת: ${senderName}.
+        - האם השולח הוא הבעלים (אדם)? ${isSuperUser ? 'כן' : 'לא'}.
+        - מידע חשוב: אדם (Adam) הוא הבעלים של העסק. אם השולח פונה ב-"היי אדם" או דומה, הוא מתכוון לבעלים.
+      `;
 
-\u200Fאו כתוב לי את בקשתך החופשית! 😊` : '';
+      const schedulingKeywords = ['תקבע', 'פגישה', 'ביומן', 'לוז', 'לסגור', 'פגשיה'];
+      const isSchedulingIntent = schedulingKeywords.some(k => text?.toLowerCase().includes(k));
+      
+      let toolResultSummary = '';
+      let manualLink = ''; 
+      
+      const agent = mastra.getAgent('whatsapp-agent');
 
-      let systemPrompt = '';
-      if (isSuperUser) {
-        systemPrompt = `את/ה רותם, סייעת דיגיטלית של העסק. המשתמש הנוכחי הוא אדם (מנהל המערכת).
-          ${globalStandard}
-          חשוב ביותר: עבור אדם, עני תמיד בצורה ישירה, עניינית ומקצועית בלבד. 
-          אל תציגי את עצמך, אל תצייני את הסטטוס שלך (כמו SUPER_USER_MODE) ואל תשתמשי בברכות פתיחה אלא אם נשאלת.`;
-      } else if (isOfficeOrCommittee) {
-          systemPrompt = `את/ה רותם, סוכנת שירות לקוחות רשמית של "איי קיי חברת ניקיון ואחזקה". 
-          ${globalStandard}
-          המשתמש הזה הוא "משרד" או "ועד בית". עני בצורה עניינית ומקצועית בלבד ובנושאי ניקיון/אחזקה.`;
-      } else {
-          systemPrompt = `את/ה רותם, סוכנת שירות לקוחות רשמית וחייכנית של "איי קיי חברת ניקיון ואחזקה" ✨. 
-          ${globalStandard}
-          את מוגבלת אך ורק לתחומי הניקיון, האחזקה ושירות הלקוחות של העסק.`;
+      if (isSchedulingIntent) {
+        if (isSuperUser) {
+          console.log(`[STABLE_FIX] Scheduling intent detected by Owner.`);
+          try {
+            const extractionPrompt = `חלץ פרטי פגישה מטקסט: "${text}". 
+              היום הוא יום ${dateStrHe}, השעה הנוכחית ${serverTimeHe}. 
+              החזר JSON בלבד: { "summary": "...", "start_time": "ISO", "end_time": "ISO", "description": "..." }`;
+            
+            const extractionResult = await agent.generate(extractionPrompt, { 
+              maxSteps: 1,
+              instructions: `את עוזרת חכמה לחילוץ זמנים. היום הוא יום ${dateStrHe}, שעה ${serverTimeHe}. חלץ ISO תקין לפי ירושלים.` 
+            });
+            const jsonMatch = extractionResult.text.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              const params = JSON.parse(jsonMatch[0]);
+              console.log(`[STABLE_FIX] Extracted parameters:`, params);
+              const tools = await agent.listTools();
+              const executeResult = await (tools as any).scheduleCalendarEvent.execute({
+                ...params,
+                calendar_id: process.env.GOOGLE_CALENDAR_ID || 'primary'
+              });
+              
+              toolResultSummary = `\n\n[כלי היומן בוצע! תוצאה: ${executeResult.message}]`;
+              manualLink = executeResult.add_to_your_calendar_link || '';
+            }
+          } catch (e: any) {
+            console.error(`[STABLE_FIX] Manual tooling failed: ${e.message}`);
+            toolResultSummary = `\n\n[שגיאה בקביעת הפגישה - ${e.message}]`;
+          }
+        } else {
+          console.log(`[STABLE_FIX] Scheduling intent by non-owner. Notifying Adam.`);
+          try {
+            const ownerChatId = '972526672663@c.us';
+            const notificationText = `\u200F🔔 *בקשה לקביעת פגישה!*
+\u200Fמאת: ${senderName} (${chatId})
+\u200Fההודעה: "${text}"
+\u200Fהזמן: יום ${dateStrHe}, שעה ${timeStrHe}.
+
+\u200Fרותם הודיעה שזה הועבר לאישורך.`;
+            await greenApi.sendMessage(ownerChatId, notificationText);
+            toolResultSummary = `\n\n[הודעת עדכון נשלחה לאדם לאישור פגישה. אל תנסי לקבוע בעצמך ביומן!]`;
+          } catch (e: any) {
+            console.error(`[STABLE_FIX] Owner notification failed: ${e.message}`);
+          }
+        }
       }
 
-      if (isVoiceMessage) {
-        systemPrompt += `\n\nחשוב: המשתמש שלח הודעה קולית. עני בטקסט זורם להקראה, ללא עיצובים (כמו \u200F או *).`;
-      }
-
-      const context = [
-        { role: 'system', content: systemPrompt },
-        ...(isAskingForOpening ? [] : history.map((h: any) => ({
+      const limitedHistory = history.slice(-6, -1);
+      const cleanContext = [
+        { role: 'system', content: toolResultSummary || 'שיחה רגילה.' },
+        ...limitedHistory.map((h: any) => ({
           role: h.role === 'assistant' ? 'assistant' : 'user',
           content: h.content,
-        })))
+        }))
       ];
 
-      context.push({
-        role: 'system',
-        content: `תזכורת סופית: היום ה-${dateStrHe}, השעה ${timeStrHe}. ${shouldForceOpening ? `השתמשי בדיוק בפורמט הודעת הפתיחה הבא:\n${openingInstruction}` : 'עני ישירות לבקשת המשתמש.'} ${isAskingForOpening ? 'כעת הצג את הודעת הפתיחה המלאה.' : ''}`
+      console.time(`[${APP_VERSION}] agent-generate`);
+      const result = await agent.generate(text || 'שלום', { 
+        context: cleanContext as any, 
+        maxSteps: 3,
+        instructions: authInstructions
       });
+      console.timeEnd(`[${APP_VERSION}] agent-generate`);
 
-      // Get Agent
-      const agent = mastra.getAgent('whatsapp-agent');
-      console.log(`Using model: ${agent.model}`);
-      
-      // Generate response
-      const result = await agent.generate(text || 'שלום', {
-        context: context as any
-      });
-      const replyText = result.text;
+      let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
 
-      console.log(`[${APP_VERSION}] Generated reply: "${replyText}"`);
+      if (manualLink && !replyText.includes(manualLink)) {
+        replyText += `\n\nלחץ כאן כדי להוסיף ליומן שלך: ${manualLink}`;
+      }
 
-      // Save assistant message
       await saveMessage(chatId, 'assistant', replyText);
 
-      // Send via Green API (Voice or Text)
       if (isVoiceMessage) {
          try {
-           console.log(`[TTS] Generating voice note for reply...`);
-           const ttsBuffer = await elevenLabs.textToSpeech(replyText);
+           await greenApi.sendMessage(chatId, replyText);
+           let ttsText = replyText;
+           if (manualLink) {
+             const linkLine = `\n\nלחץ כאן כדי להוסיף ליומן שלך: ${manualLink}`;
+             ttsText = replyText.replace(linkLine, '').trim();
+           }
+           ttsText = ttsText.replace(/https?:\/\/[^\s]+/g, '').trim();
+
+           const ttsBuffer = await elevenLabs.textToSpeech(ttsText);
            const uploadUrl = await greenApi.uploadFile(ttsBuffer, 'audio/mpeg', 'reply.mp3');
            await greenApi.sendFileByUrl(chatId, uploadUrl, 'reply.mp3');
-           console.log('Voice note sent successfully.');
          } catch (e: any) {
-           console.error(`[TTS Error] Failed to generate/send voice note (${e.message}). Falling back to text...`);
-           await greenApi.sendMessage(chatId, replyText);
+           console.error(`[TTS Error] ${e.message}`);
          }
       } else {
          await greenApi.sendMessage(chatId, replyText);
-         console.log('Text reply sent successfully.');
       }
       
       await greenApi.setChatPresence(chatId, 'paused');
-
-
-      return NextResponse.json({ 
-        status: 'success', 
-        reply: replyText,
-        debug: {
-          isSuperUser,
-          senderNumber,
-          cleanRaw: rawSenderClean,
-          widNumber,
-          type
-        }
-      });
+      console.timeEnd(`[${APP_VERSION}] webhook-total`);
+      return NextResponse.json({ status: 'success', reply: replyText });
     }
 
     return NextResponse.json({ status: 'ignored_event' });
   } catch (error: any) {
     console.error('Webhook Error:', error);
-    const detail = error.responseBody || error.data || null;
-    if (detail) {
-      console.error('AI Error Detail:', detail);
-    }
-    return NextResponse.json({ 
-      error: error.message, 
-      detail: typeof detail === 'string' ? JSON.parse(detail) : detail 
-    }, { status: 500 });
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
