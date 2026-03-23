@@ -159,7 +159,7 @@ export async function POST(req: NextRequest) {
             const base64 = fileBuffer.toString('base64');
             fileData = {
               type: 'image',
-              image: `data:${mimeType};base64,${base64}`,
+              image: base64,
               mimeType
             };
             if (!text) text = `[${isImage ? 'תמונה' : 'מסמך'} שצורף]`;
