@@ -227,14 +227,26 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const limitedHistory = history.slice(-6, -1);
+      const limitedHistory = history.slice(-6);
       const cleanContext = [
-        { role: 'system', content: toolResultSummary || 'שיחה רגילה.' },
         ...limitedHistory.map((h: any) => ({
           role: h.role === 'assistant' ? 'assistant' : 'user',
           content: h.content,
         }))
       ];
+
+      // Deduplication: If we already sent a message in the last 15 seconds to this chat, 
+      // check if it's a generic greeting or if we should skip to avoid spamming during bulk uploads.
+      const lastAssistantMessage = history.filter((h: any) => h.role === 'assistant').pop();
+      if (lastAssistantMessage) {
+        const lastTime = new Date(lastAssistantMessage.created_at).getTime();
+        const now = new Date().getTime();
+        if (now - lastTime < 15000) { // 15 seconds
+          console.log(`[DEDUPLICATION] Skipping response to ${chatId} - too soon since last reply.`);
+           // We still save the user message to history, but we don't trigger the AI for this burst
+           return NextResponse.json({ status: 'success_deduplicated' });
+        }
+      }
 
       console.time(`[${APP_VERSION}] agent-generate`);
       
@@ -243,10 +255,12 @@ export async function POST(req: NextRequest) {
         promptContent.push(fileData);
       }
 
-      const result = await agent.generate(promptContent as any, { 
+      const result = await agent.generate([
+        { role: 'user', content: promptContent }
+      ], { 
         context: cleanContext as any, 
         maxSteps: 3,
-        instructions: authInstructions
+        instructions: authInstructions + (toolResultSummary ? `\n\n${toolResultSummary}` : '')
       });
       console.timeEnd(`[${APP_VERSION}] agent-generate`);
 
