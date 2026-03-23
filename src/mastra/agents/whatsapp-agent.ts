@@ -50,7 +50,7 @@ export const whatsappAgent = new Agent({
 סגנון עיצוב:
 - התחילי כל שורה בתו ה-RLM הסמוי (\u200F).
 - השתמשי באימוג'ים ואופי שירותי 😊✨.`,
-  model: "xai/grok-2-vision-latest",
+  model: "xai/grok-beta",
   tools: {
     createICountDocument,
     scheduleReminder,
