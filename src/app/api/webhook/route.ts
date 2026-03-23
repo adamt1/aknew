@@ -156,11 +156,11 @@ export async function POST(req: NextRequest) {
           }
 
           if (fileBuffer) {
-            console.log(`[DEBUG] Downloaded buffer: size=${fileBuffer.length}, header=${fileBuffer.slice(0, 10).toString('hex')}`);
+            console.log(`[DEBUG] Image size: ${fileBuffer.length} bytes`);
+            const base64 = fileBuffer.toString('base64');
             fileData = {
               type: 'image',
-              image: fileBuffer,
-              mimeType
+              image: `data:${mimeType};base64,${base64}`
             } as any;
             if (!text) text = `[${isImage ? 'תמונה' : 'מסמך'} שצורף]`;
           }
