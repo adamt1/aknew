@@ -280,6 +280,8 @@ export async function POST(req: NextRequest) {
           role: h.role === 'assistant' ? 'assistant' : 'user',
           content: h.content,
         })),
+        { role: 'user', content: promptContentParts }
+      ];
       // Deduplication: Avoid spamming during bulk uploads or duplicate webhooks
       const lastAssistantMessage = history.filter((h: any) => h.role === 'assistant').pop();
       if (lastAssistantMessage) {
