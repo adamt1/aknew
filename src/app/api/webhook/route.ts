@@ -255,38 +255,35 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const limitedHistory = history.slice(-6);
-      const cleanContext = [
-        ...limitedHistory.map((h: any) => ({
-          role: h.role === 'assistant' ? 'assistant' : 'user',
-          content: h.content,
-        }))
-      ];
-
-      // Deduplication: If we already sent a message in the last 15 seconds to this chat, 
-      // check if it's a generic greeting or if we should skip to avoid spamming during bulk uploads.
-      const lastAssistantMessage = history.filter((h: any) => h.role === 'assistant').pop();
-      if (lastAssistantMessage) {
-        const lastTime = new Date(lastAssistantMessage.created_at).getTime();
-        const now = new Date().getTime();
-        if (now - lastTime < 5000) { // 5 seconds
-          console.log(`[DEDUPLICATION] Skipping response to ${chatId} - too soon since last reply.`);
-           // We still save the user message to history, but we don't trigger the AI for this burst
-           return NextResponse.json({ status: 'success_deduplicated' });
-        }
-      }
-
-      console.time(`[${APP_VERSION}] agent-generate`);
+      // Build messages array for the agent
+      const historyLegacy = history.filter((h: any) => h.content !== text && h.content !== placeholder).slice(-5);
       
       const promptContent: any[] = [{ type: 'text', text: text || 'שלום' }];
       if (fileData) {
         promptContent.push(fileData);
       }
 
-      const result = await agent.generate([
+      const messages: any[] = [
+        ...historyLegacy.map((h: any) => ({
+          role: h.role === 'assistant' ? 'assistant' : 'user',
+          content: h.content,
+        })),
         { role: 'user', content: promptContent }
-      ], { 
-        context: cleanContext as any, 
+      ];
+
+      // Deduplication: If we already sent a message in the last 5 seconds to this chat, 
+      const lastAssistantMessage = history.filter((h: any) => h.role === 'assistant').pop();
+      if (lastAssistantMessage) {
+        const lastTime = new Date(lastAssistantMessage.created_at).getTime();
+        const now = new Date().getTime();
+        if (now - lastTime < 5000) { // 5 seconds
+          console.log(`[DEDUPLICATION] Skipping response to ${chatId} - too soon since last reply.`);
+           return NextResponse.json({ status: 'success_deduplicated' });
+        }
+      }
+
+      console.time(`[${APP_VERSION}] agent-generate`);
+      const result = await agent.generate(messages, { 
         maxSteps: 3,
         instructions: authInstructions + (toolResultSummary ? `\n\n${toolResultSummary}` : '')
       });
