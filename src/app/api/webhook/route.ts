@@ -70,7 +70,11 @@ export async function POST(req: NextRequest) {
 
       let text = messageData.textMessageData?.textMessage || 
                    messageData.extendedTextMessageData?.text ||
-                   messageData.quotedMessage?.text;
+                   messageData.quotedMessage?.text ||
+                   messageData.imageMessageData?.caption ||
+                   messageData.videoMessageData?.caption ||
+                   messageData.documentMessageData?.caption ||
+                   messageData.fileMessageData?.caption;
 
       const typeMessage = messageData.typeMessage;
       const isVoiceMessage = typeMessage === 'audioMessage';
@@ -117,8 +121,15 @@ export async function POST(req: NextRequest) {
            }
         }
       } else if (isImage || isDocument) {
-        const fileId = messageData.fileMessageData?.fileId;
-        const mimeType = messageData.fileMessageData?.mimeType || (isImage ? 'image/jpeg' : 'application/pdf');
+        const fileId = messageData.fileMessageData?.fileId || 
+                       messageData.imageMessageData?.fileId || 
+                       messageData.documentMessageData?.fileId;
+        
+        const mimeType = messageData.fileMessageData?.mimeType || 
+                         messageData.imageMessageData?.mimeType || 
+                         messageData.documentMessageData?.mimeType || 
+                         (isImage ? 'image/jpeg' : 'application/pdf');
+
         if (fileId) {
           try {
             console.log(`[VISION] Receiving ${typeMessage} (${fileId})`);
