@@ -255,6 +255,10 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      if (isSuperUser) {
+        await greenApi.sendMessage(chatId, `\u200F🔍 רותם מתחילה לעבד את הבקשה... (${isImage ? 'תמונה' : 'טקסט'})`);
+      }
+
       // Build messages array for the agent
       const historyLegacy = history.filter((h: any) => h.content !== text && h.content !== placeholder).slice(-5);
       
@@ -288,6 +292,10 @@ export async function POST(req: NextRequest) {
         instructions: authInstructions + (toolResultSummary ? `\n\n${toolResultSummary}` : '')
       });
       console.timeEnd(`[${APP_VERSION}] agent-generate`);
+
+      if (isSuperUser) {
+        await greenApi.sendMessage(chatId, `\u200F✅ העיבוד הושלם, מפיקה תשובה...`);
+      }
 
       let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
 
@@ -328,12 +336,13 @@ export async function POST(req: NextRequest) {
     
     // Attempt to notify owner of the crash if possible
     try {
-      const body = await req.clone().json().catch(() => ({}));
-      const chatId = body.senderData?.chatId || body.chatId;
+      const chatId = body?.senderData?.chatId || body?.chatId;
       if (chatId) {
         await greenApi.sendMessage(chatId, `\u200F⚠️ *שגיאת מערכת:* ${error.message}\n\nהבוט נתקל בבעיה וקרס. רותם עדיין לומדת... 🛠️`);
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error('Failed to send error message:', e);
+    }
 
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
