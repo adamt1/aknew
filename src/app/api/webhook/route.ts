@@ -325,6 +325,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: 'ignored_event' });
   } catch (error: any) {
     console.error('Webhook Error:', error);
+    
+    // Attempt to notify owner of the crash if possible
+    try {
+      const body = await req.clone().json().catch(() => ({}));
+      const chatId = body.senderData?.chatId || body.chatId;
+      if (chatId) {
+        await greenApi.sendMessage(chatId, `\u200F⚠️ *שגיאת מערכת:* ${error.message}\n\nהבוט נתקל בבעיה וקרס. רותם עדיין לומדת... 🛠️`);
+      }
+    } catch (e) {}
+
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
