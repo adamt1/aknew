@@ -280,8 +280,16 @@ export async function POST(req: NextRequest) {
           role: h.role === 'assistant' ? 'assistant' : 'user',
           content: h.content,
         })),
-        { role: 'user', content: promptContentParts }
-      ];
+      // Deduplication: Avoid spamming during bulk uploads or duplicate webhooks
+      const lastAssistantMessage = history.filter((h: any) => h.role === 'assistant').pop();
+      if (lastAssistantMessage) {
+        const lastTime = new Date(lastAssistantMessage.created_at).getTime();
+        const now = new Date().getTime();
+        if (now - lastTime < 10000) { // 10 seconds
+          console.log(`[DEDUPLICATION] Skipping response to ${chatId} - too soon since last reply.`);
+           return NextResponse.json({ status: 'success_deduplicated' });
+        }
+      }
 
       console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
