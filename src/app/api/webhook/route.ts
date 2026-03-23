@@ -161,7 +161,7 @@ export async function POST(req: NextRequest) {
               type: 'image',
               image: fileBuffer,
               mimeType
-            };
+            } as any;
             if (!text) text = `[${isImage ? 'תמונה' : 'מסמך'} שצורף]`;
           }
         } catch (e: any) {
@@ -293,6 +293,21 @@ export async function POST(req: NextRequest) {
       }
 
       console.time(`[${APP_VERSION}] agent-generate`);
+      // Reorder: Image first often works better for some vision models
+      const promptContentParts: any[] = [];
+      if (fileData) {
+        promptContentParts.push(fileData);
+      }
+      promptContentParts.push({ type: 'text', text: text || 'שלום' });
+
+      const messages: any[] = [
+        ...historyLegacy.map((h: any) => ({
+          role: h.role === 'assistant' ? 'assistant' : 'user',
+          content: h.content,
+        })),
+        { role: 'user', content: promptContentParts }
+      ];
+
       const result = await agent.generate(messages, { 
         maxSteps: 3,
         instructions: authInstructions + (toolResultSummary ? `\n\n${toolResultSummary}` : '')
