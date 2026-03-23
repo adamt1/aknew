@@ -391,6 +391,7 @@ export async function POST(req: NextRequest) {
     console.error('Webhook Error:', error);
     
     // Attempt to notify owner of the crash if possible
+    /* 
     try {
       const chatId = body?.senderData?.chatId || body?.chatId || body?.messageData?.chatId;
       if (chatId) {
@@ -404,7 +405,9 @@ export async function POST(req: NextRequest) {
     } catch (e) {
       console.error('Failed to send error message:', e);
     }
+    */
 
-    return NextResponse.json({ error: error.message, stage: currentStage }, { status: 500 });
+    // Return 200 OK so that Green API stops retrying the webhook
+    return NextResponse.json({ error: error.message, stage: currentStage }, { status: 200 });
   }
 }
