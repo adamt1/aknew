@@ -283,9 +283,30 @@ export async function POST(req: NextRequest) {
         { role: 'user', content: promptContentParts }
       ];
 
-      const result = await agent.generate(messages, { 
-        maxSteps: 3
-      });
+      console.time(`[${APP_VERSION}] agent-generate`);
+      let result: any;
+      try {
+        result = await agent.generate(messages, { 
+          maxSteps: 3
+        });
+      } catch (e: any) {
+        console.error(`[Vision AI Error] ${e.message}`, e);
+        if (fileData) {
+          console.log(`[Vision AI Fallback] Retrying text-only...`);
+          const textOnlyMessages = messages.map((m: any) => {
+             if (m.role === 'user' && Array.isArray(m.content)) {
+                return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
+             }
+             return m;
+          });
+          result = await agent.generate(textOnlyMessages, {
+            maxSteps: 3,
+            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה, לכן תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע.'
+          });
+        } else {
+          throw e; // Rethrow if not a vision issue or already tried
+        }
+      }
       console.timeEnd(`[${APP_VERSION}] agent-generate`);
 
       if (isSuperUser) {
