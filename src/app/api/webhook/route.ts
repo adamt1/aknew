@@ -111,6 +111,7 @@ export async function POST(req: NextRequest) {
 
       if (isVoiceMessage) {
         const downloadUrl = messageData.fileMessageData?.downloadUrl;
+        const idMessage = body.idMessage;
         if (downloadUrl) {
            try {
              const audioBuffer = await greenApi.downloadFile(downloadUrl);
@@ -119,21 +120,36 @@ export async function POST(req: NextRequest) {
              console.error(`[STT Error] ${e.message}`);
              return NextResponse.json({ status: 'stt_failed' });
            }
+        } else if (idMessage) {
+           try {
+             const audioBuffer = await greenApi.downloadFileByMessage(chatId, idMessage);
+             text = await elevenLabs.speechToText(audioBuffer);
+           } catch (e: any) {
+             console.error(`[STT Error via messageId] ${e.message}`);
+           }
         }
       } else if (isImage || isDocument) {
-        const fileId = messageData.fileMessageData?.fileId || 
-                       messageData.imageMessageData?.fileId || 
-                       messageData.documentMessageData?.fileId;
+        const downloadUrl = messageData.fileMessageData?.downloadUrl || 
+                            messageData.imageMessageData?.downloadUrl || 
+                            messageData.documentMessageData?.downloadUrl;
         
+        const idMessage = body.idMessage;
         const mimeType = messageData.fileMessageData?.mimeType || 
                          messageData.imageMessageData?.mimeType || 
                          messageData.documentMessageData?.mimeType || 
                          (isImage ? 'image/jpeg' : 'application/pdf');
 
-        if (fileId) {
-          try {
-            console.log(`[VISION] Receiving ${typeMessage} (${fileId})`);
-            const fileBuffer = await greenApi.getFileByFileId(fileId);
+        try {
+          let fileBuffer: Buffer | null = null;
+          if (downloadUrl) {
+            console.log(`[VISION] Downloading via URL: ${downloadUrl}`);
+            fileBuffer = await greenApi.downloadFile(downloadUrl);
+          } else if (idMessage) {
+            console.log(`[VISION] Downloading via MessageId: ${idMessage}`);
+            fileBuffer = await greenApi.downloadFileByMessage(chatId, idMessage);
+          }
+
+          if (fileBuffer) {
             const base64 = fileBuffer.toString('base64');
             fileData = {
               type: 'image',
@@ -141,9 +157,9 @@ export async function POST(req: NextRequest) {
               mimeType
             };
             if (!text) text = `[${isImage ? 'תמונה' : 'מסמך'} שצורף]`;
-          } catch (e: any) {
-            console.error(`[Vision Error] ${e.message}`);
           }
+        } catch (e: any) {
+          console.error(`[Vision Error] ${e.message}`);
         }
       }
 

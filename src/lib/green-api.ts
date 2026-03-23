@@ -82,23 +82,25 @@ export class GreenApiService {
     return Buffer.from(arrayBuffer);
   }
 
-  async getFileByFileId(fileId: string): Promise<Buffer> {
+  async downloadFileByMessage(chatId: string, idMessage: string): Promise<Buffer> {
     const url = this.getUrl('downloadFile');
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ fileId }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId, idMessage }),
     });
 
     if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`Failed to download file from Green API: ${err}`);
+        const errorText = await response.text();
+        throw new Error(`Failed to get download URL: ${response.statusText} (${errorText})`);
     }
 
-    const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    const data = await response.json();
+    if (!data.downloadUrl) {
+      throw new Error(`No downloadUrl returned from Green API for message ${idMessage}`);
+    }
+
+    return this.downloadFile(data.downloadUrl);
   }
 
   async uploadFile(buffer: Buffer, mimeType: string, filename?: string): Promise<string> {
