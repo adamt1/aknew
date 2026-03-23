@@ -275,6 +275,7 @@ export async function POST(req: NextRequest) {
       promptContentParts.push({ type: 'text', text: text || 'שלום' });
 
       const messages: any[] = [
+        { role: 'system', content: authInstructions + (toolResultSummary ? `\n\n${toolResultSummary}` : '') },
         ...historyLegacy.map((h: any) => ({
           role: h.role === 'assistant' ? 'assistant' : 'user',
           content: h.content,
@@ -282,20 +283,8 @@ export async function POST(req: NextRequest) {
         { role: 'user', content: promptContentParts }
       ];
 
-      // Deduplication: Avoid spamming during bulk uploads
-      const lastAssistantMessage = history.filter((h: any) => h.role === 'assistant').pop();
-      if (lastAssistantMessage) {
-        const lastTime = new Date(lastAssistantMessage.created_at).getTime();
-        const now = new Date().getTime();
-        if (now - lastTime < 5000) { // 5 seconds
-          console.log(`[DEDUPLICATION] Skipping response to ${chatId} - too soon since last reply.`);
-           return NextResponse.json({ status: 'success_deduplicated' });
-        }
-      }
-
       const result = await agent.generate(messages, { 
-        maxSteps: 3,
-        instructions: authInstructions + (toolResultSummary ? `\n\n${toolResultSummary}` : '')
+        maxSteps: 3
       });
       console.timeEnd(`[${APP_VERSION}] agent-generate`);
 
