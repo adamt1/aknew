@@ -8,8 +8,14 @@ export async function POST(req: NextRequest) {
   const APP_VERSION = 'v4.0-TIMEFIX';
   console.time(`[${APP_VERSION}] webhook-total`);
 
+  let body: any = {};
   try {
-    const body = await req.json();
+    try {
+      body = await req.json();
+    } catch (e) {
+      console.warn('Failed to parse webhook body');
+      return NextResponse.json({ status: 'invalid_json' });
+    }
     console.log('FULL WEBHOOK BODY:', JSON.stringify(body, null, 2));
     const type = body.typeWebhook;
 
