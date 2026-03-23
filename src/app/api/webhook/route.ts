@@ -5,11 +5,13 @@ import { saveMessage, getHistory, isBotActive, setBotStatus } from '@/lib/supaba
 import { elevenLabs } from '@/lib/elevenlabs';
 
 export async function POST(req: NextRequest) {
-  const APP_VERSION = 'v4.0-TIMEFIX';
+  const APP_VERSION = 'v4.1-STREAMLINED';
   console.time(`[${APP_VERSION}] webhook-total`);
 
   let body: any = {};
+  let currentStage = 'init';
   try {
+    currentStage = 'parsing_webhook';
     try {
       body = await req.json();
     } catch (e) {
@@ -111,6 +113,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ status: 'bot_inactive' });
       }
 
+      currentStage = 'processing_media';
+
       let fileData: { type: 'image'; image: string; mimeType: string } | null = null;
       const isImage = typeMessage === 'imageMessage';
       const isDocument = typeMessage === 'documentMessage';
@@ -156,12 +160,26 @@ export async function POST(req: NextRequest) {
           }
 
           if (fileBuffer) {
-            console.log(`[DEBUG] Image size: ${fileBuffer.length} bytes`);
-            const base64 = fileBuffer.toString('base64');
-            fileData = {
-              type: 'image',
-              image: `data:${mimeType};base64,${base64}`
-            } as any;
+            console.log(`[VISION] Downloaded ${fileBuffer.length} bytes. Mime: ${mimeType}`);
+            
+            // Large image handling: If > 3.5MB, try to use thumbnail if available
+            const MAX_SIZE = 3.5 * 1024 * 1024;
+            const thumbnail = messageData.fileMessageData?.jpegThumbnail || messageData.imageMessageData?.jpegThumbnail;
+            
+            if (fileBuffer.length > MAX_SIZE && thumbnail) {
+               console.log(`[VISION] File too large (${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB). Switching to thumbnail fallback.`);
+               fileData = {
+                 type: 'image',
+                 image: `data:image/jpeg;base64,${thumbnail}`,
+                 mimeType: 'image/jpeg'
+               } as any;
+            } else {
+               fileData = {
+                 type: 'image',
+                 image: fileBuffer,
+                 mimeType: mimeType
+               } as any;
+            }
             if (!text) text = `[${isImage ? 'תמונה' : 'מסמך'} שצורף]`;
           }
         } catch (e: any) {
@@ -214,6 +232,8 @@ export async function POST(req: NextRequest) {
       
       const agent = mastra.getAgent('whatsapp-agent');
 
+      currentStage = 'tool_execution';
+
       if (isSchedulingIntent) {
         if (isSuperUser) {
           console.log(`[STABLE_FIX] Scheduling intent detected by Owner.`);
@@ -251,7 +271,7 @@ export async function POST(req: NextRequest) {
 \u200Fמאת: ${senderName} (${chatId})
 \u200Fההודעה: "${text}"
 \u200Fהזמן: יום ${dateStrHe}, שעה ${timeStrHe}.
-
+ 
 \u200Fרותם הודיעה שזה הועבר לאישורך.`;
             await greenApi.sendMessage(ownerChatId, notificationText);
             toolResultSummary = `\n\n[הודעת עדכון נשלחה לאדם לאישור פגישה. אל תנסי לקבוע בעצמך ביומן!]`;
@@ -261,15 +281,14 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      if (isSuperUser) {
-        await greenApi.sendMessage(chatId, `\u200F🔍 רותם מתחילה לעבד את הבקשה... (${isImage ? 'תמונה' : 'טקסט'})`);
-      }
+      currentStage = 'agent_generation';
 
       // Build multimodal messages array for the agent - Image first
       const historyLegacy = history.filter((h: any) => h.content !== text && h.content !== placeholder).slice(-5);
       
       const promptContentParts: any[] = [];
       if (fileData) {
+        console.log(`[VISION] Adding media to prompt: ${fileData.mimeType}`);
         promptContentParts.push(fileData);
       }
       promptContentParts.push({ type: 'text', text: text || 'שלום' });
@@ -296,13 +315,14 @@ export async function POST(req: NextRequest) {
       console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
       try {
+        // Use a more robust vision model if available or stick to a stable one
         result = await agent.generate(messages, { 
           maxSteps: 3
         });
       } catch (e: any) {
-        console.error(`[Vision AI Error] ${e.message}`, e);
+        console.error(`[Vision AI Error] Stage: ${currentStage}, Error: ${e.message}`, e);
         if (fileData) {
-          console.log(`[Vision AI Fallback] Retrying text-only...`);
+          console.log(`[Vision AI Fallback] Retrying text-only... Reason: ${e.message}`);
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
                 return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
@@ -311,7 +331,7 @@ export async function POST(req: NextRequest) {
           });
           result = await agent.generate(textOnlyMessages, {
             maxSteps: 3,
-            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה, לכן תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע.'
+            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה (שגיאה: ' + e.message + '). ייתכן שהקובץ גדול מדי או בפורמט לא נתמך (כמו HEIC). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל.'
           });
         } else {
           throw e; // Rethrow if not a vision issue or already tried
@@ -319,9 +339,7 @@ export async function POST(req: NextRequest) {
       }
       console.timeEnd(`[${APP_VERSION}] agent-generate`);
 
-      if (isSuperUser) {
-        await greenApi.sendMessage(chatId, `\u200F✅ העיבוד הושלם, מפיקה תשובה...`);
-      }
+      currentStage = 'sending_response';
 
       let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
 
@@ -362,14 +380,19 @@ export async function POST(req: NextRequest) {
     
     // Attempt to notify owner of the crash if possible
     try {
-      const chatId = body?.senderData?.chatId || body?.chatId;
+      const chatId = body?.senderData?.chatId || body?.chatId || body?.messageData?.chatId;
       if (chatId) {
-        await greenApi.sendMessage(chatId, `\u200F⚠️ *שגיאת מערכת:* ${error.message}\n\nהבוט נתקל בבעיה וקרס. רותם עדיין לומדת... 🛠️`);
+        const errorMsg = `\u200F⚠️ *שגיאת מערכת:*
+\u200Fשלב: ${currentStage}
+\u200Fפירוט: ${error.message}
+
+\u200Fרותם נתקלה בבעיה בעיבוד הבקשה שלך. 🛠️`;
+        await greenApi.sendMessage(chatId, errorMsg);
       }
     } catch (e) {
       console.error('Failed to send error message:', e);
     }
 
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error.message, stage: currentStage }, { status: 500 });
   }
 }
