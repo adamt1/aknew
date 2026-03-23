@@ -87,20 +87,6 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      if (isVoiceMessage) {
-        const downloadUrl = messageData.fileMessageData?.downloadUrl;
-        if (downloadUrl) {
-           try {
-             const audioBuffer = await greenApi.downloadFile(downloadUrl);
-             text = await elevenLabs.speechToText(audioBuffer);
-           } catch (e: any) {
-             console.error(`[STT Error] ${e.message}`);
-             return NextResponse.json({ status: 'stt_failed' });
-           }
-        }
-      }
-
-      // Bot Detection
       const botTypes = ['templateMessage', 'buttonsMessage', 'listMessage', 'buttonsResponseMessage', 'listResponseMessage', 'templateResponseMessage'];
       const isBotMessageType = botTypes.includes(typeMessage);
       const isBotInName = senderName.toLowerCase().includes('bot') || senderName.includes('בוט');
@@ -113,6 +99,41 @@ export async function POST(req: NextRequest) {
       const active = await isBotActive(chatId);
       if (!active && !isSuperUser) {
         return NextResponse.json({ status: 'bot_inactive' });
+      }
+
+      let fileData: { type: 'image'; image: string; mimeType: string } | null = null;
+      const isImage = typeMessage === 'imageMessage';
+      const isDocument = typeMessage === 'documentMessage';
+
+      if (isVoiceMessage) {
+        const downloadUrl = messageData.fileMessageData?.downloadUrl;
+        if (downloadUrl) {
+           try {
+             const audioBuffer = await greenApi.downloadFile(downloadUrl);
+             text = await elevenLabs.speechToText(audioBuffer);
+           } catch (e: any) {
+             console.error(`[STT Error] ${e.message}`);
+             return NextResponse.json({ status: 'stt_failed' });
+           }
+        }
+      } else if (isImage || isDocument) {
+        const fileId = messageData.fileMessageData?.fileId;
+        const mimeType = messageData.fileMessageData?.mimeType || (isImage ? 'image/jpeg' : 'application/pdf');
+        if (fileId) {
+          try {
+            console.log(`[VISION] Receiving ${typeMessage} (${fileId})`);
+            const fileBuffer = await greenApi.getFileByFileId(fileId);
+            const base64 = fileBuffer.toString('base64');
+            fileData = {
+              type: 'image',
+              image: `data:${mimeType};base64,${base64}`,
+              mimeType
+            };
+            if (!text) text = `[${isImage ? 'תמונה' : 'מסמך'} שצורף]`;
+          } catch (e: any) {
+            console.error(`[Vision Error] ${e.message}`);
+          }
+        }
       }
 
       await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
@@ -216,7 +237,13 @@ export async function POST(req: NextRequest) {
       ];
 
       console.time(`[${APP_VERSION}] agent-generate`);
-      const result = await agent.generate(text || 'שלום', { 
+      
+      const promptContent: any[] = [{ type: 'text', text: text || 'שלום' }];
+      if (fileData) {
+        promptContent.push(fileData);
+      }
+
+      const result = await agent.generate(promptContent as any, { 
         context: cleanContext as any, 
         maxSteps: 3,
         instructions: authInstructions

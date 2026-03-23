@@ -82,6 +82,25 @@ export class GreenApiService {
     return Buffer.from(arrayBuffer);
   }
 
+  async getFileByFileId(fileId: string): Promise<Buffer> {
+    const url = this.getUrl('downloadFile');
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ fileId }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Failed to download file from Green API: ${err}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
   async uploadFile(buffer: Buffer, mimeType: string, filename?: string): Promise<string> {
     const url = this.getUrl('uploadFile');
     
