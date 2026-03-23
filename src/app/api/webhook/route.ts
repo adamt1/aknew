@@ -164,7 +164,8 @@ export async function POST(req: NextRequest) {
       }
 
       await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
-      await saveMessage(chatId, 'user', text || '[Voice Message]');
+      const placeholder = isVoiceMessage ? '[הודעה קולית]' : '[קובץ/תמונה]';
+      await saveMessage(chatId, 'user', text || placeholder);
       const history = await getHistory(chatId);
 
       // Time Calculations - CRITICAL FIX
@@ -268,7 +269,7 @@ export async function POST(req: NextRequest) {
       if (lastAssistantMessage) {
         const lastTime = new Date(lastAssistantMessage.created_at).getTime();
         const now = new Date().getTime();
-        if (now - lastTime < 15000) { // 15 seconds
+        if (now - lastTime < 5000) { // 5 seconds
           console.log(`[DEDUPLICATION] Skipping response to ${chatId} - too soon since last reply.`);
            // We still save the user message to history, but we don't trigger the AI for this burst
            return NextResponse.json({ status: 'success_deduplicated' });
