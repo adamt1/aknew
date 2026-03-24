@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
 import { greenApi } from '@/lib/green-api';
-import { saveMessage, getHistory, isBotActive, setBotStatus } from '@/lib/supabase';
+import { saveMessage, getHistory, isBotActive, setBotStatus, supabase } from '@/lib/supabase';
 import { elevenLabs } from '@/lib/elevenlabs';
 
 export async function POST(req: NextRequest) {
@@ -23,6 +23,22 @@ export async function POST(req: NextRequest) {
 
     const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
     const isOutgoing = type === 'outgoingMessageReceived' || type === 'outgoingAPIMessageReceived';
+
+    // Debounce/Deduplication check: Only process one message every 5 seconds per chat
+    const chatIdForDebounce = body?.senderData?.chatId || body?.chatId || body?.messageData?.chatId;
+    if (chatIdForDebounce && isIncoming) {
+       const { data: threadData } = await supabase.from('threads').select('updated_at').eq('id', chatIdForDebounce).single();
+       if (threadData?.updated_at) {
+          const lastUpdate = new Date(threadData.updated_at).getTime();
+          const now = new Date().getTime();
+          if (now - lastUpdate < 5000) { // 5 seconds debounce
+             console.log(`[DEBOUNCE] Skipping concurrent/rapid webhook for ${chatIdForDebounce}`);
+             return NextResponse.json({ status: 'success_debounced' });
+          }
+       }
+       // Update 'updated_at' immediately to "lock" the thread for 5 seconds
+       await supabase.from('threads').upsert([{ id: chatIdForDebounce, updated_at: new Date().toISOString() }], { onConflict: 'id' });
+    }
 
     if (isIncoming || isOutgoing) {
       const { senderData, messageData } = body;
@@ -253,7 +269,7 @@ export async function POST(req: NextRequest) {
               היום הוא יום ${dateStrHe}, השעה הנוכחית ${serverTimeHe}. 
               החזר JSON בלבד: { "summary": "...", "start_time": "ISO", "end_time": "ISO", "description": "..." }`;
             
-            const extractionResult = await agent.generate(extractionPrompt, { 
+            const extractionResult = await agent.generateLegacy(extractionPrompt, { 
               maxSteps: 1,
               instructions: `את עוזרת חכמה לחילוץ זמנים. היום הוא יום ${dateStrHe}, שעה ${serverTimeHe}. חלץ ISO תקין לפי ירושלים.` 
             });
@@ -326,8 +342,8 @@ export async function POST(req: NextRequest) {
       console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
       try {
-        // Use a more robust vision model if available or stick to a stable one
-        result = await agent.generate(messages, { 
+        // Switch to generateLegacy for better compatibility with openai() provider objects in Mastra v1.12
+        result = await agent.generateLegacy(messages, { 
           maxSteps: 3
         });
       } catch (e: any) {
@@ -340,7 +356,7 @@ export async function POST(req: NextRequest) {
              }
              return m;
           });
-          result = await agent.generate(textOnlyMessages, {
+          result = await agent.generateLegacy(textOnlyMessages, {
             maxSteps: 3,
             instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה (שגיאה: ' + e.message + '). ייתכן שהקובץ גדול מדי או בפורמט לא נתמך (כמו HEIC). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל.'
           });
