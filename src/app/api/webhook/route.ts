@@ -355,10 +355,22 @@ export async function POST(req: NextRequest) {
       console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
       try {
-        // Main attempt: GPT-4o
-        result = await agent.generateLegacy(messages, { 
-          maxSteps: 3
-        });
+        // Attempt generate() first (standard for v3 models like Grok-beta)
+        // If it fails with a "use generateLegacy" error, we fallback to that
+        try {
+          result = await agent.generate(messages, { 
+            maxSteps: 3
+          });
+        } catch (genErr: any) {
+          if (genErr.message?.includes('generateLegacy')) {
+            console.log(`[GENERATION FALLBACK] Switching to generateLegacy() for this model...`);
+            result = await agent.generateLegacy(messages, { 
+              maxSteps: 3
+            });
+          } else {
+            throw genErr;
+          }
+        }
       } catch (e: any) {
         console.error(`[AI Generation Error] Stage: ${currentStage}, Error: ${e.message}`, e);
         
@@ -378,7 +390,7 @@ export async function POST(req: NextRequest) {
           
           try {
             const fallbackAgent = mastra.getAgent('whatsapp-agent-fallback');
-            result = await fallbackAgent.generateLegacy(textOnlyMessages, {
+            result = await fallbackAgent.generate(textOnlyMessages, {
               maxSteps: 3
             });
             console.log(`[QUOTA FALLBACK] xAI succeeded.`);
@@ -394,7 +406,7 @@ export async function POST(req: NextRequest) {
              }
              return m;
           });
-          result = await agent.generateLegacy(textOnlyMessages, {
+          result = await agent.generate(textOnlyMessages, {
             maxSteps: 3,
             instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה (שגיאה: ' + e.message + '). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל.'
           });
