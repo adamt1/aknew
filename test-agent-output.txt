@@ -1,0 +1,30 @@
+[dotenv@17.3.1] injecting env (10) from .env.local -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+Testing agent: whatsapp-agent
+--- GENERATING WITH maxSteps: 5 ---
+[CALENDAR_TOOL] Scheduling event on calendar: "tayaradam25@gmail.com"
+[CALENDAR_TOOL] Time: 2026-03-19T10:00:00+02:00 to 2026-03-19T11:00:00+02:00
+Final Text Response: בסדר, אני אקבע לך פגישה עם משה למחר, 19 במרץ 2026, בשעה 10:00 בבוקר. אני אשתמש בכלי ליצירת אירוע ביומן.
+
+הפגישה עם משה נקבעה בהצלחה ליומן שלי למחר, 19 במרץ 2026, בשעה 10:00. לחץ כאן כדי להוסיף ליומן שלך: [https://www.google.com/calendar/render?action=TEMPLATE&text=%D7%A4%D7%92%D7%99%D7%A9%D7%94%20%D7%A2%D7%9D%20%D7%9E%D7%A9%D7%94&dates=20260319T100000+0200/20260319T110000+0200&details=&sf=true&output=xml]
+Tool Results Count: 1
+First Tool Result: {
+  "type": "tool-result",
+  "runId": "91646142-c52a-44fa-96b7-75bbb9d748c9",
+  "from": "AGENT",
+  "payload": {
+    "args": {
+      "summary": "פגישה עם משה",
+      "start_time": "2026-03-19T10:00:00+02:00",
+      "end_time": "2026-03-19T11:00:00+02:00"
+    },
+    "toolCallId": "call_64686148",
+    "toolName": "scheduleCalendarEvent",
+    "result": {
+      "success": true,
+      "message": "Event \"פגישה עם משה\" scheduled successfully on Rotem's internal calendar. \n\nCRITICAL: Please provide this link to the user to add it to their own calendar: https://www.google.com/calendar/render?action=TEMPLATE&text=%D7%A4%D7%92%D7%99%D7%A9%D7%94%20%D7%A2%D7%9D%20%D7%9E%D7%A9%D7%94&dates=20260319T100000+0200/20260319T110000+0200&details=&sf=true&output=xml",
+      "event_link": "https://www.google.com/calendar/event?eid=NmhnMG03NGR1aGYyc2phOGt0OWQwYTRrMXMgdGF5YXJhZGFtMjVAbQ",
+      "add_to_your_calendar_link": "https://www.google.com/calendar/render?action=TEMPLATE&text=%D7%A4%D7%92%D7%99%D7%A9%D7%94%20%D7%A2%D7%9D%20%D7%9E%D7%A9%D7%94&dates=20260319T100000+0200/20260319T110000+0200&details=&sf=true&output=xml",
+      "start": "2026-03-19T10:00:00+02:00"
+    }
+  }
+}

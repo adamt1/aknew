@@ -1,6 +1,7 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { googleCalendar } from "../../lib/google-calendar";
+import fs from 'fs';
 
 export const scheduleCalendarEvent = createTool({
   id: "scheduleCalendarEvent",
@@ -15,6 +16,9 @@ export const scheduleCalendarEvent = createTool({
   }),
   execute: async (inputData) => {
     try {
+      // DEBUG LOG
+      fs.appendFileSync('/tmp/calendar-tool-calls.txt', `[${new Date().toISOString()}] Called with: ${JSON.stringify(inputData)}\n`);
+      
       const event = {
         summary: inputData.summary,
         description: inputData.description,

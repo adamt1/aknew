@@ -1,0 +1,5 @@
+[dotenv@17.3.1] injecting env (10) from .env.local -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+Listing events for: tayaradam25@gmail.com from 2026-03-18T22:00:00.000Z
+2026-03-19T09:48:24+02:00 - Verification: Rotem Bot Fix ✅ (ID: pp2qfcqsh2qbik40ho8mrfceh0)
+2026-03-19T10:00:00+02:00 - פגישה עם משה (ID: 6hg0m74duhf2sja8kt9d0a4k1s)
+2026-03-19T12:53:58+02:00 - Test Event from Bot Script (Fixed) (ID: 5rvjokmkmsdlilfengvi9f6kdg)

@@ -1,0 +1,17 @@
+/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/@supabase/supabase-js/src/lib/helpers.ts:86
+    throw new Error('supabaseUrl is required.')
+          ^
+
+Error: supabaseUrl is required.
+    at validateSupabaseUrl (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/@supabase/supabase-js/src/lib/helpers.ts:86:11)
+    at new SupabaseClient (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/@supabase/supabase-js/src/SupabaseClient.ts:284:21)
+    at createClient (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/@supabase/supabase-js/src/index.ts:60:10)
+    at <anonymous> (/Users/adamtayar/.gemini/antigravity/playground/static-filament/src/lib/supabase.ts:6:25)
+    at Object.<anonymous> (/Users/adamtayar/.gemini/antigravity/playground/static-filament/src/lib/supabase.ts:45:23)
+    at Module._compile (node:internal/modules/cjs/loader:1761:14)
+    at Object.transformer (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/tsx/dist/register-D46fvsV_.cjs:3:1104)
+    at Module.load (node:internal/modules/cjs/loader:1481:32)
+    at Module._load (node:internal/modules/cjs/loader:1300:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+
+Node.js v24.13.0

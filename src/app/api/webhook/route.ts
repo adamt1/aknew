@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
+import { xai } from '@ai-sdk/xai';
+import { openai } from '@ai-sdk/openai';
 import { greenApi } from '@/lib/green-api';
 import { saveMessage, getHistory, isBotActive, setBotStatus, supabase } from '@/lib/supabase';
 import { elevenLabs } from '@/lib/elevenlabs';
@@ -24,7 +26,19 @@ export async function POST(req: NextRequest) {
     const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
     const isOutgoing = type === 'outgoingMessageReceived' || type === 'outgoingAPIMessageReceived';
 
-    // Debounce/Deduplication check: Only process one message every 5 seconds per chat
+    // 1. Strict Deduplication by idMessage
+    const idMessage = body.idMessage || body.messageData?.idMessage;
+    if (idMessage) {
+       const { data: alreadyProcessed } = await supabase.from('processed_webhooks').select('id').eq('id', idMessage).single();
+       if (alreadyProcessed) {
+          console.log(`[DEDUPLICATION] Skipping already processed message ID: ${idMessage}`);
+          return NextResponse.json({ status: 'already_processed' });
+       }
+       // Mark as processed immediately
+       await supabase.from('processed_webhooks').insert([{ id: idMessage }]);
+    }
+
+    // 2. Debounce/Deduplication check: Only process one message every 5 seconds per chat
     const chatIdForDebounce = body?.senderData?.chatId || body?.chatId || body?.messageData?.chatId;
     if (chatIdForDebounce && isIncoming) {
        const { data: threadData } = await supabase.from('threads').select('updated_at').eq('id', chatIdForDebounce).single();
@@ -342,13 +356,38 @@ export async function POST(req: NextRequest) {
       console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
       try {
-        // Switch to generateLegacy for better compatibility with openai() provider objects in Mastra v1.12
+        // Main attempt: GPT-4o
         result = await agent.generateLegacy(messages, { 
           maxSteps: 3
         });
       } catch (e: any) {
-        console.error(`[Vision AI Error] Stage: ${currentStage}, Error: ${e.message}`, e);
-        if (fileData) {
+        console.error(`[AI Generation Error] Stage: ${currentStage}, Error: ${e.message}`, e);
+        
+        // Check for Quota/Billing Error - Automatic Fallback to xAI/Grok
+        const isQuotaError = e.message?.toLowerCase().includes('quota') || 
+                            e.message?.toLowerCase().includes('billing') ||
+                            e.message?.toLowerCase().includes('limit');
+
+        if (isQuotaError) {
+          console.log(`[QUOTA FALLBACK] OpenAI failed. Retrying with xAI (Grok)...`);
+          const textOnlyMessages = messages.map((m: any) => {
+             if (m.role === 'user' && Array.isArray(m.content)) {
+                return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
+             }
+             return m;
+          });
+          
+          try {
+            const fallbackAgent = mastra.getAgent('whatsapp-agent-fallback');
+            result = await fallbackAgent.generateLegacy(textOnlyMessages, {
+              maxSteps: 3
+            });
+            console.log(`[QUOTA FALLBACK] xAI succeeded.`);
+          } catch (grokError: any) {
+            console.error(`[QUOTA FALLBACK] xAI also failed: ${grokError.message}`);
+            throw e; // Rethrow original OpenAI error if fallback also fails
+          }
+        } else if (fileData) {
           console.log(`[Vision AI Fallback] Retrying text-only... Reason: ${e.message}`);
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
@@ -358,7 +397,7 @@ export async function POST(req: NextRequest) {
           });
           result = await agent.generateLegacy(textOnlyMessages, {
             maxSteps: 3,
-            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה (שגיאה: ' + e.message + '). ייתכן שהקובץ גדול מדי או בפורמט לא נתמך (כמו HEIC). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל.'
+            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה (שגיאה: ' + e.message + '). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל.'
           });
         } else {
           throw e; // Rethrow if not a vision issue or already tried

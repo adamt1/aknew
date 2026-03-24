@@ -1,0 +1,28 @@
+Google Calendar credentials not fully configured (GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY)
+[dotenv@17.3.1] injecting env (10) from .env.local -- tip: 🤖 agentic secret storage: https://dotenvx.com/as2
+Dotenv result: Success
+GOOGLE_CLIENT_EMAIL exists: true
+GOOGLE_PRIVATE_KEY exists: true
+Testing calendar: tayaradam25@gmail.com
+Error creating Google Calendar event: Error: No key or keyFile set.
+    at TokenHandler.processCredentials (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/gtoken/tokenHandler.js:31:19)
+    at TokenHandler.getToken (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/gtoken/tokenHandler.js:71:20)
+    at GoogleToken.getToken (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/gtoken/googleToken.js:98:43)
+    at JWT.refreshTokenNoCache (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/jwtclient.js:189:36)
+    at JWT.refreshToken (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/oauth2client.js:228:24)
+    at JWT.getRequestMetadataAsync (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/oauth2client.js:372:28)
+    at JWT.getRequestMetadataAsync (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/jwtclient.js:113:26)
+    at JWT.requestAsync (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/oauth2client.js:457:34)
+    at JWT.request (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/oauth2client.js:452:25)
+    at createAPIRequestAsync (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/googleapis-common/build/src/apirequest.js:308:42)
+Failed to create event: Error: No key or keyFile set.
+    at TokenHandler.processCredentials (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/gtoken/tokenHandler.js:31:19)
+    at TokenHandler.getToken (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/gtoken/tokenHandler.js:71:20)
+    at GoogleToken.getToken (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/gtoken/googleToken.js:98:43)
+    at JWT.refreshTokenNoCache (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/jwtclient.js:189:36)
+    at JWT.refreshToken (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/oauth2client.js:228:24)
+    at JWT.getRequestMetadataAsync (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/oauth2client.js:372:28)
+    at JWT.getRequestMetadataAsync (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/jwtclient.js:113:26)
+    at JWT.requestAsync (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/oauth2client.js:457:34)
+    at JWT.request (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/google-auth-library/build/src/auth/oauth2client.js:452:25)
+    at createAPIRequestAsync (/Users/adamtayar/.gemini/antigravity/playground/static-filament/node_modules/googleapis-common/build/src/apirequest.js:308:42)

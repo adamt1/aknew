@@ -1,0 +1,4 @@
+[dotenv@17.3.1] injecting env (10) from .env.local -- tip: 🛡️ auth for agents: https://vestauth.com
+Testing calendar: tayaradam25@gmail.com
+Event created successfully!
+Event link: https://www.google.com/calendar/event?eid=NXJ2am9rbWttc2RsaWxmZW5ndmk5ZjZrZGcgdGF5YXJhZGFtMjVAbQ
