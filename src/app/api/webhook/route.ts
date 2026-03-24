@@ -162,13 +162,13 @@ export async function POST(req: NextRequest) {
           if (fileBuffer) {
             console.log(`[VISION] Downloaded ${fileBuffer.length} bytes. Mime: ${mimeType}`);
             
-            // Large image handling: If > 2MB, try to use thumbnail if available
-            const MAX_SIZE = 2 * 1024 * 1024; // Lower to 2MB for safety
+            // GPT-4o Optimization: Increase size limit to 10MB
+            const MAX_SIZE = 10 * 1024 * 1024;
             const thumbnail = messageData.fileMessageData?.jpegThumbnail || messageData.imageMessageData?.jpegThumbnail;
             
             if (mimeType.includes('heic') || mimeType.includes('heif')) {
                console.log(`[VISION] HEIC/HEIF detected. Model likely doesn't support this.`);
-               // Fallback to thumbnail if possible, as it's always JPEG
+               // Fallback to thumbnail as it's always JPEG
                if (thumbnail) {
                  fileData = {
                    type: 'image',
@@ -177,14 +177,13 @@ export async function POST(req: NextRequest) {
                  } as any;
                }
             } else if (fileBuffer.length > MAX_SIZE && thumbnail) {
-               console.log(`[VISION] File too large (${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB). Switching to thumbnail fallback.`);
+               console.log(`[VISION] File too large (${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB). Falling back to thumbnail.`);
                fileData = {
                  type: 'image',
                  image: `data:image/jpeg;base64,${thumbnail}`,
                  mimeType: 'image/jpeg'
                } as any;
             } else {
-               // Use base64 data URI for better compatibility with some providers across different SDK versions
                const base64 = fileBuffer.toString('base64');
                fileData = {
                  type: 'image',
@@ -391,7 +390,6 @@ export async function POST(req: NextRequest) {
     console.error('Webhook Error:', error);
     
     // Attempt to notify owner of the crash if possible
-    /* 
     try {
       const chatId = body?.senderData?.chatId || body?.chatId || body?.messageData?.chatId;
       if (chatId) {
@@ -405,7 +403,6 @@ export async function POST(req: NextRequest) {
     } catch (e) {
       console.error('Failed to send error message:', e);
     }
-    */
 
     // Return 200 OK so that Green API stops retrying the webhook
     return NextResponse.json({ error: error.message, stage: currentStage }, { status: 200 });
