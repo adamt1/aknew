@@ -1,4 +1,5 @@
 import { Agent } from "@mastra/core/agent";
+import { openai } from "@ai-sdk/openai";
 import { xai } from "@ai-sdk/xai";
 import { createICountDocument } from "../tools/icount-tools";
 import { scheduleReminder } from "../tools/reminder-tools";
@@ -51,7 +52,7 @@ export const whatsappAgent = new Agent({
 סגנון עיצוב:
 - התחילי כל שורה בתו ה-RLM הסמוי (\u200F).
 - השתמשי באימוג'ים ואופי שירותי 😊✨.`,
-  model: xai("grok-beta"), // Temporarily switched to Grok due to OpenAI quota issues
+  model: openai("gpt-4o"),
   tools: {
     createICountDocument,
     scheduleReminder,
