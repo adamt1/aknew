@@ -52,7 +52,7 @@ export const whatsappAgent = new Agent({
 סגנון עיצוב:
 - התחילי כל שורה בתו ה-RLM הסמוי (\u200F).
 - השתמשי באימוג'ים ואופי שירותי 😊✨.`,
-  model: openai("gpt-4o"),
+  model: xai("grok-2-1212"),
   tools: {
     createICountDocument,
     scheduleReminder,

@@ -51,7 +51,7 @@ export const whatsappAgentFallback = new Agent({
 סגנון עיצוב:
 - התחילי כל שורה בתו ה-RLM הסמוי (\u200F).
 - השתמשי באימוג'ים ואופי שירותי 😊✨.`,
-  model: xai("grok-beta"),
+  model: xai("grok-2-1212"),
   tools: {
     createICountDocument,
     scheduleReminder,
