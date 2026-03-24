@@ -326,8 +326,7 @@ export async function POST(req: NextRequest) {
       console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
       try {
-        // Use generateLegacy for GPT-4o in Mastra v1.12 to avoid specificationVersion error
-        result = await agent.generateLegacy(messages, { 
+        result = await agent.generate(messages, { 
           maxSteps: 3
         });
       } catch (e: any) {
