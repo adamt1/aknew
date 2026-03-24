@@ -1,4 +1,5 @@
 import { Agent } from "@mastra/core/agent";
+import { openai } from "@ai-sdk/openai";
 import { createICountDocument } from "../tools/icount-tools";
 import { scheduleReminder } from "../tools/reminder-tools";
 import { scheduleCalendarEvent } from "../tools/calendar-tools";
