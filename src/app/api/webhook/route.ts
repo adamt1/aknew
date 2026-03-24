@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
 import { xai } from '@ai-sdk/xai';
-import { openai } from '@ai-sdk/openai';
 import { greenApi } from '@/lib/green-api';
 import { saveMessage, getHistory, isBotActive, setBotStatus, supabase } from '@/lib/supabase';
 import { elevenLabs } from '@/lib/elevenlabs';
