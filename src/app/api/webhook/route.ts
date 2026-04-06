@@ -287,6 +287,7 @@ export async function POST(req: NextRequest) {
 
       console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
+      let visionError: string | null = null;
       try {
         result = await agent.generate(messages, { 
           maxSteps: 3
@@ -294,7 +295,8 @@ export async function POST(req: NextRequest) {
       } catch (e: any) {
         console.error(`[Vision AI Error/Grok] Stage: ${currentStage}, Error: ${e.message}`, e);
         if (fileData) {
-          console.log(`[Vision AI Fallback] Retrying text-only... Reason: ${e.message}`);
+          visionError = e.message;
+          console.log(`[Vision AI Fallback] Retrying text-only... Reason: ${visionError}`);
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
                 return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
@@ -302,11 +304,9 @@ export async function POST(req: NextRequest) {
              return m;
           });
           
-          const technicalDetails = isSuperUser ? `\n\n(שגיאה טכנית לאבחון: ${e.message})` : '';
-          
           result = await agent.generate(textOnlyMessages, {
             maxSteps: 3,
-            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה. ייתכן שהקובץ גדול מדי או בפורמט לא נתמך (כמו HEIC). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל. ' + technicalDetails
+            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה. ייתכן שהקובץ גדול מדי או בפורמט לא נתמך (כמו HEIC). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל. '
           });
         } else {
           throw e; // Rethrow if not a vision issue or already tried
@@ -318,6 +318,11 @@ export async function POST(req: NextRequest) {
 
       let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
       
+      // DIAGNOSTIC ALERT FOR ADAM (OWNER)
+      if (visionError && isSuperUser) {
+        replyText += `\n\n[אבחון טכני: ${visionError}]`;
+      }
+
       if (replyText.includes('[IGNORE]')) {
         console.log(`[POLICY_ENFORCEMENT] Agent decided to ignore message from ${chatId} (likely a holiday greeting)`);
         await saveMessage(chatId, 'assistant', '[בוט התעלם - ברכת חג]');
