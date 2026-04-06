@@ -183,20 +183,24 @@ export async function POST(req: NextRequest) {
 
             if (isImage || isDocument) {
               const MAX_SIZE = 5 * 1024 * 1024; // 5MB limit
-              
-              // If it's a known non-supported format for vision models (HEIC, PDF, etc.) 
-              // or it's a supported format but too large, use the thumbnail (which is always a small JPEG)
               const useThumbnail = !isSupportedImage || fileBuffer.length > MAX_SIZE;
 
               if (useThumbnail && thumbnail) {
-                 console.log(`[VISION] Using thumbnail for ${mimeType} (Size: ${fileBuffer.length}, Supported: ${isSupportedImage})`);
+                 console.log(`[VISION] Using thumbnail for ${mimeType} (Size: ${fileBuffer.length})`);
+                 // Cleanse the thumbnail string just in case it has prefix or whitespace
+                 const cleanThumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, '').trim();
                  fileData = { 
                    type: 'image', 
-                   image: Buffer.from(thumbnail, 'base64'),
+                   image: Buffer.from(cleanThumbnail, 'base64'),
                    mimeType: 'image/jpeg' 
                  } as any;
+                 
+                 // If it was a PDF, enhance the text prompt to mention it's a preview
+                 if (isDocument && mimeType === 'application/pdf') {
+                   text = `${text || '[מסמך PDF]'} (שים לב: צירפתי תצוגה מקדימה של העמוד הראשון מהמסמך הדיגיטלי)`;
+                 }
               } else if (isSupportedImage) {
-                console.log(`[VISION] Sending Base64 image (Mime: ${mimeType}).`);
+                console.log(`[VISION] Sending full image (Mime: ${mimeType}).`);
                 fileData = { 
                    type: 'image', 
                    image: fileBuffer, 
@@ -272,7 +276,8 @@ export async function POST(req: NextRequest) {
       } catch (e: any) {
         console.error(`[Vision AI Error/Grok] Error: ${e.message}`, e);
         if (fileData) {
-          visionError = e.message;
+          // Add details to the technical error to help identification
+          visionError = `${e.message} (Format: ${fileData.mimeType}, Size: ${fileData.image?.length || '?'})`;
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
                 return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
@@ -297,7 +302,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_12:49_FINAL_VISION';
+      const BUILD_ID = 'BUILD_13:00_DIAG_VISION';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
