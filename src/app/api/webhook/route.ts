@@ -5,7 +5,7 @@ import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed 
 import { elevenLabs } from '@/lib/elevenlabs';
 
 export async function POST(req: NextRequest) {
-  const APP_VERSION = 'v4.1-STREAMLINED';
+  const APP_VERSION = 'v4.2-VISION-READY';
   console.time(`[${APP_VERSION}] webhook-total`);
 
   let body: any = {};
@@ -62,7 +62,8 @@ export async function POST(req: NextRequest) {
       let contactName = '';
       let visionError: string | null = null;
       let fileData: any = null;
-      let currentStage = 'initialization';
+      currentStage = 'initialization';
+      
       try {
         const contactInfo = await greenApi.getContactInfo(chatId);
         contactName = contactInfo.contactName || '';
@@ -126,7 +127,6 @@ export async function POST(req: NextRequest) {
 
       currentStage = 'processing_media';
 
-      fileData = null;
       const isImage = typeMessage === 'imageMessage';
       const isDocument = typeMessage === 'documentMessage';
       const isVideo = typeMessage === 'videoMessage';
@@ -176,26 +176,26 @@ export async function POST(req: NextRequest) {
           if (fileBuffer) {
             console.log(`[MEDIA] Downloaded ${fileBuffer.length} bytes. Mime: ${mimeType}`);
             
-            // Vision processing ONLY for images
-            if (isImage) {
-              const MAX_SIZE = 10 * 1024 * 1024;
-              const thumbnail = messageData.imageMessageData?.jpegThumbnail;
-              
-              if (mimeType.includes('heic') || mimeType.includes('heif')) {
-                 console.log(`[VISION] HEIC/HEIF detected. Using thumbnail fallback.`);
-                 if (thumbnail) {
+            // Vision processing for images and documents
+            if (isImage || isDocument) {
+              const MAX_SIZE = 5 * 1024 * 1024; // 5MB limit
+              const thumbnail = isImage ? messageData.imageMessageData?.jpegThumbnail : messageData.documentMessageData?.jpegThumbnail;
+              const isVisionCompatible = mimeType.startsWith('image/') || (isDocument && (mimeType === 'application/pdf' || mimeType.includes('image')));
+
+              if (isVisionCompatible) {
+                if (fileBuffer.length > MAX_SIZE && thumbnail) {
+                   console.log(`[VISION] File too large. Falling back to thumbnail.`);
                    fileData = { type: 'image', image: `data:image/jpeg;base64,${thumbnail}`, mimeType: 'image/jpeg' } as any;
-                 }
-              } else if (fileBuffer.length > MAX_SIZE && thumbnail) {
-                 console.log(`[VISION] Image too large (${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB). Falling back to thumbnail.`);
-                 fileData = { type: 'image', image: `data:image/jpeg;base64,${thumbnail}`, mimeType: 'image/jpeg' } as any;
-              } else {
-                console.log(`[VISION] Sending direct buffer. Size: ${fileBuffer.length} bytes.`);
-                fileData = { 
-                  type: 'image', 
-                  image: fileBuffer, 
-                  mimeType: mimeType.startsWith('image/') ? mimeType : 'image/jpeg' 
-                } as any;
+                } else {
+                  console.log(`[VISION] Sending Base64 image.`);
+                  const base64 = fileBuffer.toString('base64');
+                  const targetMime = mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
+                  fileData = { 
+                    type: 'image', 
+                    image: `data:${targetMime};base64,${base64}`, 
+                    mimeType: targetMime 
+                  } as any;
+                }
               }
             }
             
@@ -206,101 +206,65 @@ export async function POST(req: NextRequest) {
         } catch (e: any) {
           console.error(`[Media Download Error] ${e.message}`);
           visionError = `שגיאת הורדה: ${e.message}`;
-          // Fallback to caption only if download fails
           if (!text) text = `[משתמש שלח ${typeMessage}, אך חלה שגיאה טכנית בהורדה]`;
         }
       }
-
 
       await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
       const placeholder = isVoiceMessage ? '[הודעה קולית]' : '[קובץ/תמונה]';
       await saveMessage(chatId, 'user', text || placeholder);
       const history = await getHistory(chatId);
 
-      // Time Calculations - CRITICAL FIX
       const messageDate = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
       const serverDate = new Date();
       
       const dateStrHe = messageDate.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
       const timeStrHe = messageDate.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
       const serverTimeHe = serverDate.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
-      const isSignificantDelay = Math.abs(serverDate.getTime() - messageDate.getTime()) > 3600000; // > 1 hour
-
-      const globalStandard = `
-        הנחיות קריטיות לעיצוב וסגנון:
-        - **מלל העסק**: השתמשי תמיד בביטוי "הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה".
-        - **יישור לימין**: כל שורה חייבת להתחיל בתו ה-RLM הסמוי מטקסט (\u200F).
-        - **טון דיבור**: לבבית, חייכנית ושירותית 😊✨. השתמשי באימוג'ים שמחים.
-      `;
+      const isSignificantDelay = Math.abs(serverDate.getTime() - messageDate.getTime()) > 3600000;
 
       const authInstructions = `
-        הנחיות קריטיות (Authoritative Context):
-        - היום הוא יום ${dateStrHe}. 
-        - השעה המקומית כרגע (בישראל): ${serverTimeHe}.
-        - זמן שליחת ההודעה שקיבלת מהלקוח: ${timeStrHe}.
-        ${isSignificantDelay ? '- שימי לב: ההודעה התקבלה בעיכוב משמעותי של מעל שעה. אם רלוונטי, התנצלי על העיכוב בתגובה.' : ''}
-        - תמיד השתמשי בתאריך ובשעה אלו כמקור היחיד והקובע למושגים כמו "היום", "עכשיו", "מחר" וכו'.
-        - השנה היא 2026.
-        
-        סגנון וכללים:
-        ${globalStandard}
-        - שם השולח/ת: ${senderName}.
-        - האם השולח הוא הבעלים (אדם)? ${isSuperUser ? 'כן' : 'לא'}.
-        - מידע חשוב: אדם (Adam) הוא הבעלים של העסק. אם השולח פונה ב-"היי אדם" או דומה, הוא מתכוון לבעלים.
+        הנחיות קריטיות:
+        - היום ${dateStrHe}. שעה: ${serverTimeHe}.
+        - הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה.
+        - כל שורה מתחילה ב-RLM (\u200F).
+        - טון לבבי ושירותי 😊✨.
+        - שם לקוח: ${senderName}. אדם (Owner): ${isSuperUser ? 'כן' : 'לא'}.
       `;
 
-      let toolResultSummary = '';
-      let manualLink = ''; 
-      
       const agent = mastra.getAgent('whatsapp-agent');
-
-      currentStage = 'tool_execution';
-
-      // Manual scheduling logic removed to rely on agent's direct tool calling with full context.
-      // This prevents hallucinations when users complain about previous errors.
-
       currentStage = 'agent_generation';
 
-      // Build multimodal messages array for the agent - Image first
       const historyLegacy = history.filter((h: any) => h.content !== text && h.content !== placeholder).slice(-5);
       
       const promptContentParts: any[] = [];
       if (fileData) {
-        console.log(`[VISION] Adding media to prompt: ${fileData.mimeType}`);
         promptContentParts.push(fileData);
       }
       promptContentParts.push({ type: 'text', text: text || 'שלום' });
 
       const messages: any[] = [
-        { role: 'system', content: authInstructions + (toolResultSummary ? `\n\n${toolResultSummary}` : '') },
+        { role: 'system', content: authInstructions },
         ...historyLegacy.map((h: any) => ({
           role: h.role === 'assistant' ? 'assistant' : 'user',
           content: h.content,
         })),
         { role: 'user', content: promptContentParts }
       ];
-      // Deduplication: Avoid spamming during bulk uploads or duplicate webhooks
+
       const lastAssistantMessage = history.filter((h: any) => h.role === 'assistant').pop();
-      if (lastAssistantMessage) {
-        const lastTime = new Date(lastAssistantMessage.created_at).getTime();
-        const now = new Date().getTime();
-        if (now - lastTime < 10000) { // 10 seconds
-          console.log(`[DEDUPLICATION] Skipping response to ${chatId} - too soon since last reply.`);
+      if (lastAssistantMessage && (new Date().getTime() - new Date(lastAssistantMessage.created_at).getTime() < 10000)) {
            return NextResponse.json({ status: 'success_deduplicated' });
-        }
       }
 
       console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
       try {
-        result = await agent.generate(messages, { 
-          maxSteps: 3
-        });
+        result = await agent.generate(messages, { maxSteps: 3 });
       } catch (e: any) {
-        console.error(`[Vision AI Error/Grok] Stage: ${currentStage}, Error: ${e.message}`, e);
+        console.error(`[Vision AI Error/Grok] Error: ${e.message}`, e);
         if (fileData) {
           visionError = e.message;
-          console.log(`[Vision AI Fallback] Retrying text-only... Reason: ${visionError}`);
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
                 return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
@@ -310,36 +274,29 @@ export async function POST(req: NextRequest) {
           
           result = await agent.generate(textOnlyMessages, {
             maxSteps: 3,
-            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה. ייתכן שהקובץ גדול מדי או בפורמט לא נתמך (כמו HEIC). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל. '
+            instructions: authInstructions + '\n\nשימי לב: הייתה בעיה טכנית בניתוח התמונה. התנצלי והציעי לשלוח שוב כ-JPG.'
           });
         } else {
-          throw e; // Rethrow if not a vision issue or already tried
+          throw e;
         }
       }
       console.timeEnd(`[${APP_VERSION}] agent-generate`);
 
       currentStage = 'sending_response';
-
       let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
       
-      // DIAGNOSTIC ALERT FOR ADAM (OWNER)
       if (visionError && isSuperUser) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_12:24_VISION_DX';
+      const BUILD_ID = 'BUILD_12:35_DOC_VISION_STABLE';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
 
       if (replyText.includes('[IGNORE]')) {
-        console.log(`[POLICY_ENFORCEMENT] Agent decided to ignore message from ${chatId} (likely a holiday greeting)`);
         await saveMessage(chatId, 'assistant', '[בוט התעלם - ברכת חג]');
         return NextResponse.json({ status: 'ignored_by_agent_policy' });
-      }
-
-      if (manualLink && !replyText.includes(manualLink)) {
-        replyText += `\n\nלחץ כאן כדי להוסיף ליומן שלך: ${manualLink}`;
       }
 
       await saveMessage(chatId, 'assistant', replyText);
@@ -347,13 +304,7 @@ export async function POST(req: NextRequest) {
       if (isVoiceMessage) {
          try {
            await greenApi.sendMessage(chatId, replyText);
-           let ttsText = replyText;
-           if (manualLink) {
-             const linkLine = `\n\nלחץ כאן כדי להוסיף ליומן שלך: ${manualLink}`;
-             ttsText = replyText.replace(linkLine, '').trim();
-           }
-           ttsText = ttsText.replace(/https?:\/\/[^\s]+/g, '').trim();
-
+           let ttsText = replyText.replace(/https?:\/\/[^\s]+/g, '').trim();
            const ttsBuffer = await elevenLabs.textToSpeech(ttsText);
            const uploadUrl = await greenApi.uploadFile(ttsBuffer, 'audio/mpeg', 'reply.mp3');
            await greenApi.sendFileByUrl(chatId, uploadUrl, 'reply.mp3');
@@ -372,23 +323,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: 'ignored_event' });
   } catch (error: any) {
     console.error('Webhook Error:', error);
-    
-    // Attempt to notify owner of the crash if possible
     try {
       const chatId = body?.senderData?.chatId || body?.chatId || body?.messageData?.chatId;
       if (chatId) {
-        const errorMsg = `\u200F⚠️ *שגיאת מערכת:*
-\u200Fשלב: ${currentStage}
-\u200Fפירוט: ${error.message}
-
-\u200Fרותם נתקלה בבעיה בעיבוד הבקשה שלך. 🛠️`;
+        const errorMsg = `\u200F⚠️ *שגיאת מערכת:* (${currentStage})\n\u200Fפירוט: ${error.message}`;
         await greenApi.sendMessage(chatId, errorMsg);
       }
-    } catch (e) {
-      console.error('Failed to send error message:', e);
-    }
-
-    // Return 200 OK so that Green API stops retrying the webhook
-    return NextResponse.json({ error: error.message, stage: currentStage }, { status: 200 });
+    } catch (e) {}
+    return NextResponse.json({ error: error.message }, { status: 200 });
   }
 }
