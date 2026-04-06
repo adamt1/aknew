@@ -186,28 +186,27 @@ export async function POST(req: NextRequest) {
               const useThumbnail = !isSupportedImage || fileBuffer.length > MAX_SIZE;
 
               if (useThumbnail && thumbnail) {
-                 console.log(`[VISION] Using thumbnail for ${mimeType} (Size: ${fileBuffer.length})`);
-                 // Cleanse the thumbnail string just in case it has prefix or whitespace
-                 const cleanThumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, '').trim();
+                 console.log(`[VISION] Using thumbnail for ${mimeType}`);
+                 const cleanThumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, '').replace(/\s/g, '');
+                 const base64Prefix = `data:image/jpeg;base64,`;
+                 
                  fileData = { 
                    type: 'image', 
-                   image: Buffer.from(cleanThumbnail, 'base64'),
+                   image: base64Prefix + cleanThumbnail,
                    mimeType: 'image/jpeg' 
                  } as any;
                  
-                 // If it was a PDF, enhance the text prompt to mention it's a preview
                  if (isDocument && mimeType === 'application/pdf') {
                    text = `${text || '[מסמך PDF]'} (שים לב: צירפתי תצוגה מקדימה של העמוד הראשון מהמסמך הדיגיטלי)`;
                  }
               } else if (isSupportedImage) {
                 console.log(`[VISION] Sending full image (Mime: ${mimeType}).`);
+                const base64 = fileBuffer.toString('base64');
                 fileData = { 
                    type: 'image', 
-                   image: fileBuffer, 
+                   image: `data:${mimeType};base64,${base64}`, 
                    mimeType: mimeType 
                 } as any;
-              } else {
-                console.warn(`[VISION] No vision path for ${mimeType} and no thumbnail available.`);
               }
             }
             
@@ -277,7 +276,8 @@ export async function POST(req: NextRequest) {
         console.error(`[Vision AI Error/Grok] Error: ${e.message}`, e);
         if (fileData) {
           // Add details to the technical error to help identification
-          visionError = `${e.message} (Format: ${fileData.mimeType}, Size: ${fileData.image?.length || '?'})`;
+          const imgInfo = typeof fileData.image === 'string' ? `Str(${fileData.image.length})` : `Buf`;
+          visionError = `${e.message} (Mime: ${fileData.mimeType}, Img: ${imgInfo})`;
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
                 return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
@@ -302,7 +302,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:00_DIAG_VISION';
+      const BUILD_ID = 'BUILD_13:05_URL_STRATEGY';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
