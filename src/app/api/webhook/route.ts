@@ -301,9 +301,12 @@ export async function POST(req: NextRequest) {
              }
              return m;
           });
+          
+          const technicalDetails = isSuperUser ? `\n\n(שגיאה טכנית לאבחון: ${e.message})` : '';
+          
           result = await agent.generate(textOnlyMessages, {
             maxSteps: 3,
-            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה (שגיאה: ' + e.message + '). ייתכן שהקובץ גדול מדי או בפורמט לא נתמך (כמו HEIC). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל.'
+            instructions: (authInstructions || '') + '\n\nשימי לב: היתה לך בעיה טכנית בניתוח התמונה שצורפה. ייתכן שהקובץ גדול מדי או בפורמט לא נתמך (כמו HEIC). תעני כרגע רק על בסיס הטקסט ותתנצלי שאינך יכולה לראות את התמונה כרגע ותציעי לו לנסות לשלוח שוב בתור JPG או צילום מסך רגיל. ' + technicalDetails
           });
         } else {
           throw e; // Rethrow if not a vision issue or already tried
