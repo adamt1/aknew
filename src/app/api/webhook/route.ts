@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
 import { greenApi } from '@/lib/green-api';
-import { saveMessage, getHistory, isBotActive, setBotStatus } from '@/lib/supabase';
+import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed } from '@/lib/supabase';
 import { elevenLabs } from '@/lib/elevenlabs';
 
 export async function POST(req: NextRequest) {
@@ -23,6 +23,14 @@ export async function POST(req: NextRequest) {
 
     const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
     const isOutgoing = type === 'outgoingMessageReceived' || type === 'outgoingAPIMessageReceived';
+
+    const idMessage = body.idMessage;
+    if (idMessage && (isIncoming || isOutgoing)) {
+      if (await isWebhookProcessed(idMessage)) {
+        console.log(`[DEDUPLICATION] Skipping already processed webhook: ${idMessage} (Type: ${type})`);
+        return NextResponse.json({ status: 'success_deduplicated_by_id' });
+      }
+    }
 
     if (isIncoming || isOutgoing) {
       const { senderData, messageData } = body;
@@ -118,6 +126,7 @@ export async function POST(req: NextRequest) {
       let fileData: { type: 'image'; image: string; mimeType: string } | null = null;
       const isImage = typeMessage === 'imageMessage';
       const isDocument = typeMessage === 'documentMessage';
+      const isVideo = typeMessage === 'videoMessage';
 
       if (isVoiceMessage) {
         const downloadUrl = messageData.fileMessageData?.downloadUrl;
@@ -138,63 +147,63 @@ export async function POST(req: NextRequest) {
              console.error(`[STT Error via messageId] ${e.message}`);
            }
         }
-      } else if (isImage || isDocument) {
+      } else if (isImage || isDocument || isVideo) {
         const downloadUrl = messageData.fileMessageData?.downloadUrl || 
                             messageData.imageMessageData?.downloadUrl || 
-                            messageData.documentMessageData?.downloadUrl;
+                            messageData.documentMessageData?.downloadUrl ||
+                            messageData.videoMessageData?.downloadUrl;
         
         const idMessage = body.idMessage;
         const mimeType = messageData.fileMessageData?.mimeType || 
                          messageData.imageMessageData?.mimeType || 
                          messageData.documentMessageData?.mimeType || 
-                         (isImage ? 'image/jpeg' : 'application/pdf');
+                         messageData.videoMessageData?.mimeType ||
+                         (isImage ? 'image/jpeg' : isVideo ? 'video/mp4' : 'application/pdf');
 
         try {
           let fileBuffer: Buffer | null = null;
           if (downloadUrl) {
-            console.log(`[VISION] Downloading via URL: ${downloadUrl}`);
+            console.log(`[MEDIA] Downloading ${typeMessage} via URL: ${downloadUrl}`);
             fileBuffer = await greenApi.downloadFile(downloadUrl);
           } else if (idMessage) {
-            console.log(`[VISION] Downloading via MessageId: ${idMessage}`);
+            console.log(`[MEDIA] Downloading ${typeMessage} via MessageId: ${idMessage}`);
             fileBuffer = await greenApi.downloadFileByMessage(chatId, idMessage);
           }
 
           if (fileBuffer) {
-            console.log(`[VISION] Downloaded ${fileBuffer.length} bytes. Mime: ${mimeType}`);
+            console.log(`[MEDIA] Downloaded ${fileBuffer.length} bytes. Mime: ${mimeType}`);
             
-            // GPT-4o Optimization: Increase size limit to 10MB
-            const MAX_SIZE = 10 * 1024 * 1024;
-            const thumbnail = messageData.fileMessageData?.jpegThumbnail || messageData.imageMessageData?.jpegThumbnail;
-            
-            if (mimeType.includes('heic') || mimeType.includes('heif')) {
-               console.log(`[VISION] HEIC/HEIF detected. Model likely doesn't support this.`);
-               // Fallback to thumbnail as it's always JPEG
-               if (thumbnail) {
-                 fileData = {
-                   type: 'image',
-                   image: `data:image/jpeg;base64,${thumbnail}`,
-                   mimeType: 'image/jpeg'
-                 } as any;
-               }
-            } else if (fileBuffer.length > MAX_SIZE && thumbnail) {
-               console.log(`[VISION] File too large (${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB). Falling back to thumbnail.`);
-               fileData = {
-                 type: 'image',
-                 image: `data:image/jpeg;base64,${thumbnail}`,
-                 mimeType: 'image/jpeg'
-               } as any;
-            } else {
-               const base64 = fileBuffer.toString('base64');
-               fileData = {
-                 type: 'image',
-                 image: `data:${mimeType};base64,${base64}`,
-                 mimeType: mimeType
-               } as any;
+            // Vision processing ONLY for images
+            if (isImage) {
+              const MAX_SIZE = 10 * 1024 * 1024;
+              const thumbnail = messageData.imageMessageData?.jpegThumbnail;
+              
+              if (mimeType.includes('heic') || mimeType.includes('heif')) {
+                 console.log(`[VISION] HEIC/HEIF detected. Using thumbnail fallback.`);
+                 if (thumbnail) {
+                   fileData = { type: 'image', image: `data:image/jpeg;base64,${thumbnail}`, mimeType: 'image/jpeg' } as any;
+                 }
+              } else if (fileBuffer.length > MAX_SIZE && thumbnail) {
+                 console.log(`[VISION] Image too large (${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB). Falling back to thumbnail.`);
+                 fileData = { type: 'image', image: `data:image/jpeg;base64,${thumbnail}`, mimeType: 'image/jpeg' } as any;
+              } else {
+                console.log(`[VISION] Sending direct buffer. Size: ${fileBuffer.length} bytes.`);
+                fileData = { 
+                  type: 'image', 
+                  image: fileBuffer, 
+                  mimeType: mimeType.startsWith('image/') ? mimeType : 'image/jpeg' 
+                } as any;
+              }
             }
-            if (!text) text = `[${isImage ? 'תמונה' : 'מסמך'} שצורף]`;
+            
+            if (!text) {
+              text = `[${isImage ? 'תמונה' : isDocument ? 'מסמך' : 'וידאו'} שצורף]`;
+            }
           }
         } catch (e: any) {
-          console.error(`[Vision Error] ${e.message}`);
+          console.error(`[Media Download Error] ${e.message}`);
+          // Fallback to caption only if download fails
+          if (!text) text = `[משתמש שלח ${typeMessage}, אך חלה שגיאה בהורדה: ${e.message}]`;
         }
       }
 
@@ -235,9 +244,6 @@ export async function POST(req: NextRequest) {
         - מידע חשוב: אדם (Adam) הוא הבעלים של העסק. אם השולח פונה ב-"היי אדם" או דומה, הוא מתכוון לבעלים.
       `;
 
-      const schedulingKeywords = ['תקבע', 'פגישה', 'ביומן', 'לוז', 'לסגור', 'פגשיה'];
-      const isSchedulingIntent = schedulingKeywords.some(k => text?.toLowerCase().includes(k));
-      
       let toolResultSummary = '';
       let manualLink = ''; 
       
@@ -245,52 +251,8 @@ export async function POST(req: NextRequest) {
 
       currentStage = 'tool_execution';
 
-      if (isSchedulingIntent) {
-        if (isSuperUser) {
-          console.log(`[STABLE_FIX] Scheduling intent detected by Owner.`);
-          try {
-            const extractionPrompt = `חלץ פרטי פגישה מטקסט: "${text}". 
-              היום הוא יום ${dateStrHe}, השעה הנוכחית ${serverTimeHe}. 
-              החזר JSON בלבד: { "summary": "...", "start_time": "ISO", "end_time": "ISO", "description": "..." }`;
-            
-            const extractionResult = await agent.generate(extractionPrompt, { 
-              maxSteps: 1,
-              instructions: `את עוזרת חכמה לחילוץ זמנים. היום הוא יום ${dateStrHe}, שעה ${serverTimeHe}. חלץ ISO תקין לפי ירושלים.` 
-            });
-            const jsonMatch = extractionResult.text.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              const params = JSON.parse(jsonMatch[0]);
-              console.log(`[STABLE_FIX] Extracted parameters:`, params);
-              const tools = await agent.listTools();
-              const executeResult = await (tools as any).scheduleCalendarEvent.execute({
-                ...params,
-                calendar_id: process.env.GOOGLE_CALENDAR_ID || 'primary'
-              });
-              
-              toolResultSummary = `\n\n[כלי היומן בוצע! תוצאה: ${executeResult.message}]`;
-              manualLink = executeResult.add_to_your_calendar_link || '';
-            }
-          } catch (e: any) {
-            console.error(`[STABLE_FIX] Manual tooling failed: ${e.message}`);
-            toolResultSummary = `\n\n[שגיאה בקביעת הפגישה - ${e.message}]`;
-          }
-        } else {
-          console.log(`[STABLE_FIX] Scheduling intent by non-owner. Notifying Adam.`);
-          try {
-            const ownerChatId = '972526672663@c.us';
-            const notificationText = `\u200F🔔 *בקשה לקביעת פגישה!*
-\u200Fמאת: ${senderName} (${chatId})
-\u200Fההודעה: "${text}"
-\u200Fהזמן: יום ${dateStrHe}, שעה ${timeStrHe}.
- 
-\u200Fרותם הודיעה שזה הועבר לאישורך.`;
-            await greenApi.sendMessage(ownerChatId, notificationText);
-            toolResultSummary = `\n\n[הודעת עדכון נשלחה לאדם לאישור פגישה. אל תנסי לקבוע בעצמך ביומן!]`;
-          } catch (e: any) {
-            console.error(`[STABLE_FIX] Owner notification failed: ${e.message}`);
-          }
-        }
-      }
+      // Manual scheduling logic removed to rely on agent's direct tool calling with full context.
+      // This prevents hallucinations when users complain about previous errors.
 
       currentStage = 'agent_generation';
 
@@ -330,7 +292,7 @@ export async function POST(req: NextRequest) {
           maxSteps: 3
         });
       } catch (e: any) {
-        console.error(`[Vision AI Error] Stage: ${currentStage}, Error: ${e.message}`, e);
+        console.error(`[Vision AI Error/Grok] Stage: ${currentStage}, Error: ${e.message}`, e);
         if (fileData) {
           console.log(`[Vision AI Fallback] Retrying text-only... Reason: ${e.message}`);
           const textOnlyMessages = messages.map((m: any) => {
@@ -352,6 +314,12 @@ export async function POST(req: NextRequest) {
       currentStage = 'sending_response';
 
       let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
+      
+      if (replyText.includes('[IGNORE]')) {
+        console.log(`[POLICY_ENFORCEMENT] Agent decided to ignore message from ${chatId} (likely a holiday greeting)`);
+        await saveMessage(chatId, 'assistant', '[בוט התעלם - ברכת חג]');
+        return NextResponse.json({ status: 'ignored_by_agent_policy' });
+      }
 
       if (manualLink && !replyText.includes(manualLink)) {
         replyText += `\n\nלחץ כאן כדי להוסיף ליומן שלך: ${manualLink}`;

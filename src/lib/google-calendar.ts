@@ -46,4 +46,18 @@ export const googleCalendar = {
       throw error;
     }
   },
+  listEvents: async (calendarId: string, options: any = {}) => {
+    try {
+      const response = await calendar.events.list({
+        calendarId,
+        timeMin: options.timeMin,
+        q: options.q,
+        singleEvents: true,
+      });
+      return response.data.items || [];
+    } catch (error: any) {
+      console.error('Error listing Google Calendar events:', error);
+      return [];
+    }
+  },
 };

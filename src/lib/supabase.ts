@@ -49,3 +49,27 @@ export async function setBotStatus(threadId: string, isActive: boolean) {
   
   if (error) console.error('Error setting bot status:', error);
 }
+
+/**
+ * Checks if a webhook with the given idMessage has already been processed.
+ * Uses a unique constraint in the database for atomicity.
+ * @returns true if already processed, false if this is the first time.
+ */
+export async function isWebhookProcessed(idMessage: string): Promise<boolean> {
+  if (!idMessage) return false;
+  
+  // Try to insert the ID. If it fails with a unique constraint violation, it's a duplicate.
+  const { error } = await supabase
+    .from('processed_webhooks')
+    .insert([{ id_message: idMessage }]);
+    
+  if (error) {
+    if (error.code === '23505') { // Unique violation code in Postgres
+      console.log(`[DEDUPLICATION] Webhook ${idMessage} already processed.`);
+      return true;
+    }
+    console.error(`[DEDUPLICATION_ERROR] Failed to check webhook ${idMessage}:`, error.message);
+  }
+  
+  return false;
+}

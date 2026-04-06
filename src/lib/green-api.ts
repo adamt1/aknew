@@ -1,3 +1,18 @@
+export interface GreenContact {
+  id: string;
+  name: string;
+  type: string;
+}
+
+export interface GreenChat {
+  archive: boolean;
+  id: string;
+  notSpam: boolean;
+  ephemeralExpiration: number;
+  ephemeralSettingTimestamp: number;
+  name: string;
+}
+
 export class GreenApiService {
   private get apiUrl() { return process.env.GREEN_API_URL || ''; }
   private get idInstance() { return process.env.GREEN_API_ID_INSTANCE || ''; }
@@ -148,6 +163,40 @@ export class GreenApiService {
         throw new Error(`Failed to send file by URL: ${err}`);
     }
 
+    return response.json();
+  }
+
+  async getContacts(): Promise<GreenContact[]> {
+    const url = this.getUrl('getContacts');
+    const response = await fetch(url);
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Failed to get contacts: ${err}`);
+    }
+    return response.json();
+  }
+
+  async getChats(): Promise<GreenChat[]> {
+    const url = this.getUrl('getChats');
+    const response = await fetch(url);
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Failed to get chats: ${err}`);
+    }
+    return response.json();
+  }
+
+  async getChatHistory(chatId: string, count: number = 100) {
+    const url = this.getUrl('getChatHistory');
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId, count }),
+    });
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Failed to get chat history for ${chatId}: ${err}`);
+    }
     return response.json();
   }
 }
