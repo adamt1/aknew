@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
 import { Agent } from "@mastra/core/agent";
 import { generateText } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
 import { xai } from "@ai-sdk/xai";
 import { greenApi } from '@/lib/green-api';
 import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed } from '@/lib/supabase';
@@ -190,12 +191,12 @@ export async function POST(req: NextRequest) {
 
               if (useThumbnail && thumbnail) {
                  console.log(`[VISION] Using thumbnail for ${mimeType}`);
+                 // IMPORTANT: Use raw base64 WITHOUT the prefix for the 'image' field
                  const cleanThumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, '').replace(/\s/g, '');
-                 const base64Prefix = `data:image/jpeg;base64,`;
                  
                  fileData = { 
                    type: 'image', 
-                   image: base64Prefix + cleanThumbnail,
+                   image: cleanThumbnail,
                    mimeType: 'image/jpeg' 
                  } as any;
                  
@@ -207,7 +208,7 @@ export async function POST(req: NextRequest) {
                 const base64 = fileBuffer.toString('base64');
                 fileData = { 
                    type: 'image', 
-                   image: `data:${mimeType};base64,${base64}`, 
+                   image: base64, 
                    mimeType: mimeType 
                 } as any;
               }
@@ -280,12 +281,16 @@ export async function POST(req: NextRequest) {
       let result: any;
       try {
         if (fileData) {
-          console.log(`[VISION] Direct AI SDK with grok-2-vision-1212 for ${fileData.mimeType}`);
-          const visionModel = xai('grok-2-vision-1212');
+          console.log(`[VISION] OpenAI-Compatible with grok-2-vision-1212 for ${fileData.mimeType}`);
           
-          // Use direct AI SDK generateText to bypass any Mastra-specific payload issues
+          // Use OpenAI provider pointed to xAI for maximum compatibility
+          const xaiOpenAI = createOpenAI({
+            apiKey: process.env.XAI_API_KEY,
+            baseURL: "https://api.x.ai/v1",
+          });
+          
           const response = await generateText({
-             model: visionModel,
+             model: xaiOpenAI('grok-2-vision-1212'),
              system: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה.",
              messages: [
                ...historyLegacy.map((h: any) => ({
@@ -331,7 +336,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:30_DIRECT_AI_SDK';
+      const BUILD_ID = 'BUILD_13:40_OAI_COMPAT';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
