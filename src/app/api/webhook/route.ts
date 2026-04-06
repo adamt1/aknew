@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
 import { Agent } from "@mastra/core/agent";
+import { generateText } from "ai";
 import { xai } from "@ai-sdk/xai";
 import { greenApi } from '@/lib/green-api';
 import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed } from '@/lib/supabase';
@@ -279,21 +280,30 @@ export async function POST(req: NextRequest) {
       let result: any;
       try {
         if (fileData) {
-          console.log(`[VISION] Using grok-2-vision-1212 for ${fileData.mimeType}`);
-          // Use grok-2-vision-1212 for vision as it's known to be stable for multimodal
+          console.log(`[VISION] Direct AI SDK with grok-2-vision-1212 for ${fileData.mimeType}`);
           const visionModel = xai('grok-2-vision-1212');
-          const visionAgent = new Agent({
-             id: 'vision-handler',
-             name: 'Rotem ❤️ (Vision)',
+          
+          // Use direct AI SDK generateText to bypass any Mastra-specific payload issues
+          const response = await generateText({
              model: visionModel,
-             instructions: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה."
+             system: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה.",
+             messages: [
+               ...historyLegacy.map((h: any) => ({
+                 role: h.role === 'assistant' ? 'assistant' : 'user',
+                 content: h.content,
+               })),
+               { 
+                 role: 'user', 
+                 content: promptContentParts
+               }
+             ],
           });
-          result = await visionAgent.generate(messages, { maxSteps: 3 });
+          result = { text: response.text };
         } else {
           result = await agent.generate(messages, { maxSteps: 3 });
         }
       } catch (e: any) {
-        console.error(`[Vision AI Error] Error: ${e.message}`, e);
+        console.error(`[Vision AI Error/SDK] Error: ${e.message}`, e);
         if (fileData) {
           const imgInfo = typeof fileData.image === 'string' ? `Str(${fileData.image.length})` : `Buf`;
           visionError = `${e.message} (Mime: ${fileData.mimeType}, Img: ${imgInfo})`;
@@ -321,7 +331,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:20_GROK2_STRATEGY';
+      const BUILD_ID = 'BUILD_13:30_DIRECT_AI_SDK';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
