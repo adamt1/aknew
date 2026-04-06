@@ -177,25 +177,33 @@ export async function POST(req: NextRequest) {
             console.log(`[MEDIA] Downloaded ${fileBuffer.length} bytes. Mime: ${mimeType}`);
             
             // Vision processing for images and documents
+            const SUPPORTED_VISION_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
+            const isSupportedImage = SUPPORTED_VISION_MIMES.includes(mimeType);
+            const thumbnail = isImage ? messageData.imageMessageData?.jpegThumbnail : messageData.documentMessageData?.jpegThumbnail;
+
             if (isImage || isDocument) {
               const MAX_SIZE = 5 * 1024 * 1024; // 5MB limit
-              const thumbnail = isImage ? messageData.imageMessageData?.jpegThumbnail : messageData.documentMessageData?.jpegThumbnail;
-              const isVisionCompatible = mimeType.startsWith('image/') || (isDocument && (mimeType === 'application/pdf' || mimeType.includes('image')));
+              
+              // If it's a known non-supported format for vision models (HEIC, PDF, etc.) 
+              // or it's a supported format but too large, use the thumbnail (which is always a small JPEG)
+              const useThumbnail = !isSupportedImage || fileBuffer.length > MAX_SIZE;
 
-              if (isVisionCompatible) {
-                if (fileBuffer.length > MAX_SIZE && thumbnail) {
-                   console.log(`[VISION] File too large. Falling back to thumbnail.`);
-                   fileData = { type: 'image', image: `data:image/jpeg;base64,${thumbnail}`, mimeType: 'image/jpeg' } as any;
-                } else {
-                  console.log(`[VISION] Sending Base64 image.`);
-                  const base64 = fileBuffer.toString('base64');
-                  const targetMime = mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
-                  fileData = { 
-                    type: 'image', 
-                    image: `data:${targetMime};base64,${base64}`, 
-                    mimeType: targetMime 
-                  } as any;
-                }
+              if (useThumbnail && thumbnail) {
+                 console.log(`[VISION] Using thumbnail for ${mimeType} (Size: ${fileBuffer.length}, Supported: ${isSupportedImage})`);
+                 fileData = { 
+                   type: 'image', 
+                   image: Buffer.from(thumbnail, 'base64'),
+                   mimeType: 'image/jpeg' 
+                 } as any;
+              } else if (isSupportedImage) {
+                console.log(`[VISION] Sending Base64 image (Mime: ${mimeType}).`);
+                fileData = { 
+                   type: 'image', 
+                   image: fileBuffer, 
+                   mimeType: mimeType 
+                } as any;
+              } else {
+                console.warn(`[VISION] No vision path for ${mimeType} and no thumbnail available.`);
               }
             }
             
@@ -289,7 +297,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_12:35_DOC_VISION_STABLE';
+      const BUILD_ID = 'BUILD_12:49_FINAL_VISION';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
