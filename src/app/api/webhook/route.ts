@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
+import { xai } from "@ai-sdk/xai";
 import { greenApi } from '@/lib/green-api';
 import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed } from '@/lib/supabase';
 import { elevenLabs } from '@/lib/elevenlabs';
@@ -249,10 +250,16 @@ export async function POST(req: NextRequest) {
       const historyLegacy = history.filter((h: any) => h.content !== text && h.content !== placeholder).slice(-5);
       
       const promptContentParts: any[] = [];
-      if (fileData) {
-        promptContentParts.push(fileData);
-      }
+      // Reorder: Text first, then Image
       promptContentParts.push({ type: 'text', text: text || 'שלום' });
+      
+      if (fileData) {
+        // Add detail: 'low' which is safer for small thumbnails/previews
+        promptContentParts.push({ 
+          ...fileData, 
+          detail: 'low' 
+        });
+      }
 
       const messages: any[] = [
         { role: 'system', content: authInstructions },
@@ -302,7 +309,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:05_URL_STRATEGY';
+      const BUILD_ID = 'BUILD_13:10_STRAT_B';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
