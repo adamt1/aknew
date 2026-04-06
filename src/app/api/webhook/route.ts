@@ -289,11 +289,11 @@ export async function POST(req: NextRequest) {
              system: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה.",
              messages: [
                ...historyLegacy.map((h: any) => ({
-                 role: h.role === 'assistant' ? 'assistant' : 'user',
+                 role: (h.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
                  content: h.content,
                })),
                { 
-                 role: 'user', 
+                 role: 'user' as const, 
                  content: promptContentParts
                }
              ],
