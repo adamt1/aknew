@@ -196,7 +196,7 @@ export async function POST(req: NextRequest) {
                  
                  fileData = { 
                    type: 'image', 
-                   image: cleanThumbnail,
+                   image: new Uint8Array(Buffer.from(cleanThumbnail, 'base64')),
                    mimeType: 'image/jpeg' 
                  } as any;
                  
@@ -205,10 +205,9 @@ export async function POST(req: NextRequest) {
                  }
               } else if (isSupportedImage) {
                 console.log(`[VISION] Sending full image (Mime: ${mimeType}).`);
-                const base64 = fileBuffer.toString('base64');
                 fileData = { 
                    type: 'image', 
-                   image: base64, 
+                   image: new Uint8Array(fileBuffer),
                    mimeType: mimeType 
                 } as any;
               }
@@ -255,12 +254,8 @@ export async function POST(req: NextRequest) {
       const promptContentParts: any[] = [];
       
       if (fileData) {
-        // Add detail: 'low' which is safer for small thumbnails/previews
         // Reorder: Image FIRST
-        promptContentParts.push({ 
-          ...fileData, 
-          detail: 'low' 
-        });
+        promptContentParts.push(fileData);
       }
 
       promptContentParts.push({ type: 'text', text: text || 'שלום' });
@@ -291,7 +286,7 @@ export async function POST(req: NextRequest) {
           });
           
           const response = await generateText({
-             model: xaiOpenAI('grok-2-vision-1212'),
+             model: xaiOpenAI('grok-vision-beta'),
              system: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה.",
              messages: [
                // For vision, we only send the current prompt or very limited history to avoid confusion
@@ -308,9 +303,17 @@ export async function POST(req: NextRequest) {
       } catch (e: any) {
         console.error(`[Vision AI Error/SDK] Error: ${e.message}`, e);
         if (fileData) {
-          const imgStart = typeof fileData.image === 'string' ? fileData.image.substring(0, 15) : 'N/A';
-          const imgInfo = typeof fileData.image === 'string' ? `Str(${fileData.image.length}) Start: ${imgStart}` : `Buf`;
-          visionError = `${e.message} (Mime: ${fileData.mimeType}, Img: ${imgInfo})`;
+          let errorDetail = e.message;
+          // Capture deep server response if available (400 validation error body)
+          if (e.response?.data) {
+             errorDetail = `${e.message} ServerResponse: ${JSON.stringify(e.response.data).substring(0, 500)}`;
+          } else if (e.cause) {
+             errorDetail = `${e.message} Cause: ${e.cause}`;
+          }
+
+          const imgStart = (fileData.image instanceof Uint8Array) ? `${fileData.image[0].toString(16)}${fileData.image[1].toString(16)}` : 'N/A';
+          const imgInfo = (fileData.image instanceof Uint8Array) ? `Binary(${fileData.image.length}) Head: ${imgStart}` : `Buf`;
+          visionError = `${errorDetail} (Mime: ${fileData.mimeType}, Img: ${imgInfo})`;
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
                 return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
@@ -335,7 +338,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:60_FINAL_PUSH';
+      const BUILD_ID = 'BUILD_13:70_DEEP_DIAG';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
