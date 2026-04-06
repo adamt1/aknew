@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
+import { Agent } from "@mastra/core/agent";
 import { xai } from "@ai-sdk/xai";
 import { greenApi } from '@/lib/green-api';
 import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed } from '@/lib/supabase';
@@ -275,14 +276,25 @@ export async function POST(req: NextRequest) {
            return NextResponse.json({ status: 'success_deduplicated' });
       }
 
-      console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
       try {
-        result = await agent.generate(messages, { maxSteps: 3 });
-      } catch (e: any) {
-        console.error(`[Vision AI Error/Grok] Error: ${e.message}`, e);
         if (fileData) {
-          // Add details to the technical error to help identification
+          console.log(`[VISION] Using grok-2-vision-1212 for ${fileData.mimeType}`);
+          // Use grok-2-vision-1212 for vision as it's known to be stable for multimodal
+          const visionModel = xai('grok-2-vision-1212');
+          const visionAgent = new Agent({
+             id: 'vision-handler',
+             name: 'Rotem ❤️ (Vision)',
+             model: visionModel,
+             instructions: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה."
+          });
+          result = await visionAgent.generate(messages, { maxSteps: 3 });
+        } else {
+          result = await agent.generate(messages, { maxSteps: 3 });
+        }
+      } catch (e: any) {
+        console.error(`[Vision AI Error] Error: ${e.message}`, e);
+        if (fileData) {
           const imgInfo = typeof fileData.image === 'string' ? `Str(${fileData.image.length})` : `Buf`;
           visionError = `${e.message} (Mime: ${fileData.mimeType}, Img: ${imgInfo})`;
           const textOnlyMessages = messages.map((m: any) => {
@@ -309,7 +321,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:10_STRAT_B';
+      const BUILD_ID = 'BUILD_13:20_GROK2_STRATEGY';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
