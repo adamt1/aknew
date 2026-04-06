@@ -60,6 +60,9 @@ export async function POST(req: NextRequest) {
       }
 
       let contactName = '';
+      let visionError: string | null = null;
+      let fileData: any = null;
+      let currentStage = 'initialization';
       try {
         const contactInfo = await greenApi.getContactInfo(chatId);
         contactName = contactInfo.contactName || '';
@@ -123,7 +126,7 @@ export async function POST(req: NextRequest) {
 
       currentStage = 'processing_media';
 
-      let fileData: { type: 'image'; image: string; mimeType: string } | null = null;
+      fileData = null;
       const isImage = typeMessage === 'imageMessage';
       const isDocument = typeMessage === 'documentMessage';
       const isVideo = typeMessage === 'videoMessage';
@@ -202,10 +205,12 @@ export async function POST(req: NextRequest) {
           }
         } catch (e: any) {
           console.error(`[Media Download Error] ${e.message}`);
+          visionError = `שגיאת הורדה: ${e.message}`;
           // Fallback to caption only if download fails
-          if (!text) text = `[משתמש שלח ${typeMessage}, אך חלה שגיאה בהורדה: ${e.message}]`;
+          if (!text) text = `[משתמש שלח ${typeMessage}, אך חלה שגיאה טכנית בהורדה]`;
         }
       }
+
 
       await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
       const placeholder = isVoiceMessage ? '[הודעה קולית]' : '[קובץ/תמונה]';
@@ -287,7 +292,6 @@ export async function POST(req: NextRequest) {
 
       console.time(`[${APP_VERSION}] agent-generate`);
       let result: any;
-      let visionError: string | null = null;
       try {
         result = await agent.generate(messages, { 
           maxSteps: 3
@@ -321,6 +325,11 @@ export async function POST(req: NextRequest) {
       // DIAGNOSTIC ALERT FOR ADAM (OWNER)
       if (visionError && isSuperUser) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
+      }
+
+      const BUILD_ID = 'BUILD_12:24_VISION_DX';
+      if (isSuperUser) {
+         replyText += `\n\n_v${BUILD_ID}_`;
       }
 
       if (replyText.includes('[IGNORE]')) {
