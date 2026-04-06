@@ -253,16 +253,17 @@ export async function POST(req: NextRequest) {
       const historyLegacy = history.filter((h: any) => h.content !== text && h.content !== placeholder).slice(-5);
       
       const promptContentParts: any[] = [];
-      // Reorder: Text first, then Image
-      promptContentParts.push({ type: 'text', text: text || 'שלום' });
       
       if (fileData) {
         // Add detail: 'low' which is safer for small thumbnails/previews
+        // Reorder: Image FIRST
         promptContentParts.push({ 
           ...fileData, 
           detail: 'low' 
         });
       }
+
+      promptContentParts.push({ type: 'text', text: text || 'שלום' });
 
       const messages: any[] = [
         { role: 'system', content: authInstructions },
@@ -293,10 +294,7 @@ export async function POST(req: NextRequest) {
              model: xaiOpenAI('grok-2-vision-1212'),
              system: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה.",
              messages: [
-               ...historyLegacy.map((h: any) => ({
-                 role: (h.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
-                 content: h.content,
-               })),
+               // For vision, we only send the current prompt or very limited history to avoid confusion
                { 
                  role: 'user' as const, 
                  content: promptContentParts
@@ -310,7 +308,8 @@ export async function POST(req: NextRequest) {
       } catch (e: any) {
         console.error(`[Vision AI Error/SDK] Error: ${e.message}`, e);
         if (fileData) {
-          const imgInfo = typeof fileData.image === 'string' ? `Str(${fileData.image.length})` : `Buf`;
+          const imgStart = typeof fileData.image === 'string' ? fileData.image.substring(0, 15) : 'N/A';
+          const imgInfo = typeof fileData.image === 'string' ? `Str(${fileData.image.length}) Start: ${imgStart}` : `Buf`;
           visionError = `${e.message} (Mime: ${fileData.mimeType}, Img: ${imgInfo})`;
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
@@ -336,7 +335,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:40_OAI_COMPAT';
+      const BUILD_ID = 'BUILD_13:60_FINAL_PUSH';
       if (isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
