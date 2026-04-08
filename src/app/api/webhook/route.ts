@@ -249,7 +249,16 @@ export async function POST(req: NextRequest) {
       const agent = mastra.getAgent('whatsapp-agent');
       currentStage = 'agent_generation';
 
-      const historyLegacy = history.filter((h: any) => h.content !== text && h.content !== placeholder).slice(-5);
+      const historyLegacy = history
+        .filter((h: any) => {
+          const content = h.content || '';
+          // Avoid diagnostic noise and empty/placeholder messages
+          return !content.includes('[אבחון טכני:') && 
+                 !content.includes('_vBUILD_') && 
+                 content !== text && 
+                 content !== placeholder;
+        })
+        .slice(-6);
       
       const promptContentParts: any[] = [];
       
@@ -287,12 +296,14 @@ export async function POST(req: NextRequest) {
           
           const response = await generateText({
              model: xaiOpenAI('grok-vision-beta'),
-             system: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה.",
+             // We remove the explicit 'system' field for vision as it can cause 400 Bad Request with some multimodal implementations
              messages: [
-               // For vision, we only send the current prompt or very limited history to avoid confusion
                { 
                  role: 'user' as const, 
-                 content: promptContentParts
+                 content: [
+                   { type: 'text', text: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה." },
+                   ...promptContentParts
+                 ]
                }
              ],
           });
@@ -323,7 +334,7 @@ export async function POST(req: NextRequest) {
           
           result = await agent.generate(textOnlyMessages, {
             maxSteps: 3,
-            instructions: authInstructions + '\n\nשימי לב: הייתה בעיה טכנית בניתוח התמונה. התנצלי והציעי לשלוח שוב כ-JPG.'
+            instructions: authInstructions + '\n\nשימי לב: הייתה בעיה טכנית בניתוח התמונה. התנצלי והציעי לשלוח שוב כ-JPG רגיל.'
           });
         } else {
           throw e;
@@ -338,8 +349,10 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:70_DEEP_DIAG';
-      if (isSuperUser) {
+      const BUILD_ID = 'BUILD_13:80_NO_SYSTEM_MSG';
+      const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
+      
+      if (isSuperUser && (visionError || isVersionRequest)) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
 
