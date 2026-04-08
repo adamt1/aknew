@@ -295,8 +295,8 @@ export async function POST(req: NextRequest) {
           });
           
           const response = await generateText({
-             model: xaiOpenAI('grok-vision-beta'),
-             // We remove the explicit 'system' field for vision as it can cause 400 Bad Request with some multimodal implementations
+             model: xai('grok-3'),
+             // We use a clean multimodal user message for grok-3
              messages: [
                { 
                  role: 'user' as const, 
@@ -324,7 +324,7 @@ export async function POST(req: NextRequest) {
 
           const imgStart = (fileData.image instanceof Uint8Array) ? `${fileData.image[0].toString(16)}${fileData.image[1].toString(16)}` : 'N/A';
           const imgInfo = (fileData.image instanceof Uint8Array) ? `Binary(${fileData.image.length}) Head: ${imgStart}` : `Buf`;
-          visionError = `${errorDetail} (Mime: ${fileData.mimeType}, Img: ${imgInfo})`;
+          visionError = `${errorDetail} (Mime: ${fileData.mimeType}, Img: ${imgInfo}, Chat: ${chatId}, Owner: ${isSuperUser})`;
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
                 return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
@@ -345,14 +345,15 @@ export async function POST(req: NextRequest) {
       currentStage = 'sending_response';
       let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
       
-      if (visionError && isSuperUser) {
+      if (visionError) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:80_NO_SYSTEM_MSG';
+      const BUILD_ID = 'BUILD_13:90_GROK3_VISION';
       const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
       
-      if (isSuperUser && (visionError || isVersionRequest)) {
+      // Global diagnostic for vision errors to help us debug
+      if (visionError || (isSuperUser && isVersionRequest)) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
 
