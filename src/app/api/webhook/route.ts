@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
 import { Agent } from "@mastra/core/agent";
+import { pdfToPng } from 'pdf-to-png-converter';
 import { generateText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { xai } from "@ai-sdk/xai";
@@ -161,7 +162,7 @@ export async function POST(req: NextRequest) {
                             messageData.videoMessageData?.downloadUrl;
         
         const idMessage = body.idMessage;
-        const mimeType = messageData.fileMessageData?.mimeType || 
+        let mimeType = messageData.fileMessageData?.mimeType || 
                          messageData.imageMessageData?.mimeType || 
                          messageData.documentMessageData?.mimeType || 
                          messageData.videoMessageData?.mimeType ||
@@ -180,12 +181,31 @@ export async function POST(req: NextRequest) {
           if (fileBuffer) {
             console.log(`[MEDIA] Downloaded ${fileBuffer.length} bytes. Mime: ${mimeType}`);
             
+            // PDF to Image conversion for Vision
+            if (mimeType === 'application/pdf' && fileBuffer) {
+              try {
+                console.log('[VISION] Converting PDF to image for analysis...');
+                const pngPages = await pdfToPng(fileBuffer as any, { 
+                  pagesToProcess: [1],
+                  viewportScale: 2.0 
+                });
+                if (pngPages.length > 0 && pngPages[0].content) {
+                  fileBuffer = Buffer.from(pngPages[0].content);
+                  mimeType = 'image/png'; // Update mimeType so isSupportedImage becomes true
+                  console.log(`[VISION] PDF converted to ${fileBuffer.length} bytes PNG.`);
+                }
+              } catch (pdfErr: any) {
+                console.error(`[PDF Conversion Error] ${pdfErr.message}`);
+                // Continue, will fallback to thumbnail if exists
+              }
+            }
+
             // Vision processing for images and documents
             const SUPPORTED_VISION_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
             const isSupportedImage = SUPPORTED_VISION_MIMES.includes(mimeType);
             const thumbnail = isImage ? messageData.imageMessageData?.jpegThumbnail : messageData.documentMessageData?.jpegThumbnail;
 
-            if (isImage || isDocument) {
+            if ((isImage || isDocument) && fileBuffer) {
               const MAX_SIZE = 5 * 1024 * 1024; // 5MB limit
               const useThumbnail = !isSupportedImage || fileBuffer.length > MAX_SIZE;
 
@@ -206,10 +226,11 @@ export async function POST(req: NextRequest) {
               } else if (isSupportedImage) {
                 console.log(`[VISION] Sending full image (Mime: ${mimeType}).`);
                 const base64 = fileBuffer.toString('base64');
+                const finalMime = mimeType === 'application/pdf' ? 'image/png' : mimeType;
                 fileData = { 
                    type: 'image', 
-                   image: `data:${mimeType};base64,${base64}`,
-                   mimeType: mimeType
+                   image: `data:${finalMime};base64,${base64}`,
+                   mimeType: finalMime
                 } as any;
               } else {
                 // HEIC/PDF without thumbnail
@@ -358,7 +379,7 @@ export async function POST(req: NextRequest) {
           
           result = await agent.generate(textOnlyMessages, {
             maxSteps: 3,
-            instructions: authInstructions + '\n\nשימי לב: הייתה בעיה טכנית בניתוח התמונה. התנצלי והציעי לשלוח שוב כ-JPG רגיל.'
+            instructions: authInstructions + '\n\nשימי לב קריטי: הייתה שגיאה טכנית בניתוח המסמך שצורף. אל תנסי לנחש מה יש בו לפי היסטוריית השיחה (כמו החלק חילוף של יונדאי). פשוט התנצלי על התקלה הטכנית והסבירי שכרגע יש קושי מערכתי בקריאת קבצי PDF מסוימים, והציעי לשלוח שוב כצילום מסך רגיל (JPG).'
           });
         } else {
           throw e;
@@ -373,7 +394,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_14:60_GROK_4_20';
+      const BUILD_ID = 'BUILD_14:80_FINAL_STABILITY';
       const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
       
       // Global diagnostic for vision errors to help us debug

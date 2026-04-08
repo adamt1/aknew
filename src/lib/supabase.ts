@@ -61,7 +61,7 @@ export async function isWebhookProcessed(idMessage: string): Promise<boolean> {
   // Try to insert the ID. If it fails with a unique constraint violation, it's a duplicate.
   const { error } = await supabase
     .from('processed_webhooks')
-    .insert([{ id_message: idMessage }]);
+    .insert([{ id: idMessage }]);
     
   if (error) {
     if (error.code === '23505') { // Unique violation code in Postgres
