@@ -313,7 +313,8 @@ export async function POST(req: NextRequest) {
                       { 
                         type: 'image_url', 
                         image_url: { 
-                          url: fileData.image
+                          url: fileData.image,
+                          detail: 'high'
                         } 
                       }
                     ]
@@ -322,13 +323,14 @@ export async function POST(req: NextRequest) {
              })
           });
 
+          const resultJson = await xaiResponse.json();
+
           if (!xaiResponse.ok) {
-            const errorRaw = await xaiResponse.text();
-            throw new Error(`Probe failed (${xaiResponse.status}): ${errorRaw}`);
+            throw new Error(`Probe failed (${xaiResponse.status}): ${JSON.stringify(resultJson).substring(0, 500)}`);
           }
 
-          const resultJson = await xaiResponse.json();
           const summary = resultJson.choices?.[0]?.message?.content || 'No summary generated.';
+          visionError = `SUCCESS_PROBE (Status: ${xaiResponse.status}, Len: ${summary.length}, Head: ${summary.substring(0, 30)})`;
           result = { text: summary };
         } else {
           result = await agent.generate(messages, { maxSteps: 3 });
@@ -371,11 +373,11 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_14:30_DEEP_PROBE';
+      const BUILD_ID = 'BUILD_14:40_FORCED_DIAG';
       const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
       
       // Global diagnostic for vision errors to help us debug
-      if (visionError || (isSuperUser && isVersionRequest)) {
+      if (visionError || isVersionRequest || isSuperUser) {
          replyText += `\n\n_v${BUILD_ID}_`;
       }
 
