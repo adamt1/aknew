@@ -302,7 +302,7 @@ export async function POST(req: NextRequest) {
                'Authorization': `Bearer ${process.env.XAI_API_KEY}`
              },
              body: JSON.stringify({
-                model: 'grok-3-vision',
+                model: 'grok-4.20-0309-non-reasoning',
                 stream: false,
                 store: false,
                 messages: [
@@ -373,7 +373,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_14:50_GROK_3_VISION';
+      const BUILD_ID = 'BUILD_14:60_GROK_4_20';
       const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
       
       // Global diagnostic for vision errors to help us debug
