@@ -196,8 +196,7 @@ export async function POST(req: NextRequest) {
                  
                  fileData = { 
                    type: 'image', 
-                   image: new Uint8Array(Buffer.from(cleanThumbnail, 'base64')),
-                   mimeType: 'image/jpeg' 
+                   image: `data:image/jpeg;base64,${cleanThumbnail}`
                  } as any;
                  
                  if (isDocument && mimeType === 'application/pdf') {
@@ -205,11 +204,15 @@ export async function POST(req: NextRequest) {
                  }
               } else if (isSupportedImage) {
                 console.log(`[VISION] Sending full image (Mime: ${mimeType}).`);
+                const base64 = fileBuffer.toString('base64');
                 fileData = { 
                    type: 'image', 
-                   image: new Uint8Array(fileBuffer),
-                   mimeType: mimeType 
+                   image: `data:${mimeType};base64,${base64}`
                 } as any;
+              } else {
+                // HEIC/PDF without thumbnail
+                const formatName = mimeType.split('/')[1]?.toUpperCase() || 'לא מוכר';
+                throw new Error(`פורמט ${formatName} דורש המרה לתמונה (JPG). אנא שלח צילום מסך רגיל.`);
               }
             }
             
@@ -294,14 +297,16 @@ export async function POST(req: NextRequest) {
             baseURL: "https://api.x.ai/v1",
           });
           
+          const visionSystemPrompt = "You are a professional document analysis agent. Analyze the provided image/document and summarize its content as requested by the user. Be precise and concise.";
+          
           const response = await generateText({
              model: xai('grok-3'),
-             // We use a clean multimodal user message for grok-3
+             // Minimal vision-focused instructions to avoid roleplay interference
              messages: [
                { 
                  role: 'user' as const, 
                  content: [
-                   { type: 'text', text: authInstructions + "\n\nאת כרגע מנתחת קובץ ויזואלי. התמקדי בפרטים המופיעים בתמונה." },
+                   { type: 'text', text: visionSystemPrompt + "\n\nOriginal Request: " + (text || 'Please summarize this image.') },
                    ...promptContentParts
                  ]
                }
@@ -322,9 +327,9 @@ export async function POST(req: NextRequest) {
              errorDetail = `${e.message} Cause: ${e.cause}`;
           }
 
-          const imgStart = (fileData.image instanceof Uint8Array) ? `${fileData.image[0].toString(16)}${fileData.image[1].toString(16)}` : 'N/A';
-          const imgInfo = (fileData.image instanceof Uint8Array) ? `Binary(${fileData.image.length}) Head: ${imgStart}` : `Buf`;
-          visionError = `${errorDetail} (Mime: ${fileData.mimeType}, Img: ${imgInfo}, Chat: ${chatId}, Owner: ${isSuperUser})`;
+          const imgHead = (typeof fileData.image === 'string') ? fileData.image.substring(0, 30) : 'Binary';
+          const imgInfo = (typeof fileData.image === 'string') ? `DataURL(${fileData.image.length}) Head: ${imgHead}` : `Buf`;
+          visionError = `${errorDetail} (Mime: ${fileData.mimeType || 'unknown'}, Img: ${imgInfo}, Chat: ${chatId}, Owner: ${isSuperUser})`;
           const textOnlyMessages = messages.map((m: any) => {
              if (m.role === 'user' && Array.isArray(m.content)) {
                 return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
@@ -349,7 +354,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_13:90_GROK3_VISION';
+      const BUILD_ID = 'BUILD_14:00_DATA_URL_VISION';
       const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
       
       // Global diagnostic for vision errors to help us debug
