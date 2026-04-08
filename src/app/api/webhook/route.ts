@@ -301,17 +301,27 @@ export async function POST(req: NextRequest) {
           
           const visionSystemPrompt = "You are a professional document analysis agent. Analyze the provided image/document and summarize its content as requested by the user. Be precise and concise.";
           
-          // Merge all instructions and query into ONE text part for maximum compatibility
+          // Merge all instructions and query into ONE text part
           const mergedText = `${visionSystemPrompt}\n\nContext:\n${authInstructions}\n\nUser Query: ${text || 'Please provide a summary.'}`;
 
           const response = await generateText({
-             model: xaiOpenAI('grok-2-vision-1212'),
+             model: xaiOpenAI('grok-3'),
+             // CRITICAL: xAI documentation (April 2026) recommends store: false for multimodal requests to avoid 400 Bad Request
+             // @ts-ignore
+             experimental_providerMetadata: {
+                openai: {
+                   store: false
+                }
+             },
              messages: [
                { 
                  role: 'user' as const, 
                  content: [
-                   { type: 'image', image: fileData.image },
-                   { type: 'text', text: mergedText }
+                   { type: 'text', text: mergedText },
+                   { 
+                     type: 'image', 
+                     image: fileData.image
+                   }
                  ]
                }
              ],
@@ -358,7 +368,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_14:10_STABLE_VISION';
+      const BUILD_ID = 'BUILD_14:20_STORE_FALSE';
       const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
       
       // Global diagnostic for vision errors to help us debug
