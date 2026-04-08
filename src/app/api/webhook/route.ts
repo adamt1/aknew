@@ -196,7 +196,8 @@ export async function POST(req: NextRequest) {
                  
                  fileData = { 
                    type: 'image', 
-                   image: `data:image/jpeg;base64,${cleanThumbnail}`
+                   image: `data:image/jpeg;base64,${cleanThumbnail}`,
+                   mimeType: 'image/jpeg'
                  } as any;
                  
                  if (isDocument && mimeType === 'application/pdf') {
@@ -207,7 +208,8 @@ export async function POST(req: NextRequest) {
                 const base64 = fileBuffer.toString('base64');
                 fileData = { 
                    type: 'image', 
-                   image: `data:${mimeType};base64,${base64}`
+                   image: `data:${mimeType};base64,${base64}`,
+                   mimeType: mimeType
                 } as any;
               } else {
                 // HEIC/PDF without thumbnail
@@ -299,15 +301,17 @@ export async function POST(req: NextRequest) {
           
           const visionSystemPrompt = "You are a professional document analysis agent. Analyze the provided image/document and summarize its content as requested by the user. Be precise and concise.";
           
+          // Merge all instructions and query into ONE text part for maximum compatibility
+          const mergedText = `${visionSystemPrompt}\n\nContext:\n${authInstructions}\n\nUser Query: ${text || 'Please provide a summary.'}`;
+
           const response = await generateText({
-             model: xai('grok-3'),
-             // Minimal vision-focused instructions to avoid roleplay interference
+             model: xaiOpenAI('grok-2-vision-1212'),
              messages: [
                { 
                  role: 'user' as const, 
                  content: [
-                   { type: 'text', text: visionSystemPrompt + "\n\nOriginal Request: " + (text || 'Please summarize this image.') },
-                   ...promptContentParts
+                   { type: 'image', image: fileData.image },
+                   { type: 'text', text: mergedText }
                  ]
                }
              ],
@@ -354,7 +358,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_14:00_DATA_URL_VISION';
+      const BUILD_ID = 'BUILD_14:10_STABLE_VISION';
       const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
       
       // Global diagnostic for vision errors to help us debug
