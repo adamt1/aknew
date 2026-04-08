@@ -291,42 +291,45 @@ export async function POST(req: NextRequest) {
       let result: any;
       try {
         if (fileData) {
-          console.log(`[VISION] OpenAI-Compatible with grok-2-vision-1212 for ${fileData.mimeType}`);
-          
-          // Use OpenAI provider pointed to xAI for maximum compatibility
-          const xaiOpenAI = createOpenAI({
-            apiKey: process.env.XAI_API_KEY,
-            baseURL: "https://api.x.ai/v1",
-          });
-          
-          const visionSystemPrompt = "You are a professional document analysis agent. Analyze the provided image/document and summarize its content as requested by the user. Be precise and concise.";
-          
-          // Merge all instructions and query into ONE text part
+          const visionSystemPrompt = "You are a professional document analysis agent. Analyze the provided image/document and summarize its content. Be precise.";
           const mergedText = `${visionSystemPrompt}\n\nContext:\n${authInstructions}\n\nUser Query: ${text || 'Please provide a summary.'}`;
 
-          const response = await generateText({
-             model: xaiOpenAI('grok-3'),
-             // CRITICAL: xAI documentation (April 2026) recommends store: false for multimodal requests to avoid 400 Bad Request
-             // @ts-ignore
-             experimental_providerMetadata: {
-                openai: {
-                   store: false
-                }
+          // DEEP PROBE: Use native fetch to see the RAW error from xAI
+          const xaiResponse = await fetch('https://api.x.ai/v1/chat/completions', {
+             method: 'POST',
+             headers: {
+               'Content-Type': 'application/json',
+               'Authorization': `Bearer ${process.env.XAI_API_KEY}`
              },
-             messages: [
-               { 
-                 role: 'user' as const, 
-                 content: [
-                   { type: 'text', text: mergedText },
-                   { 
-                     type: 'image', 
-                     image: fileData.image
-                   }
-                 ]
-               }
-             ],
+             body: JSON.stringify({
+                model: 'grok-3',
+                stream: false,
+                store: false,
+                messages: [
+                  {
+                    role: 'user',
+                    content: [
+                      { type: 'text', text: mergedText },
+                      { 
+                        type: 'image_url', 
+                        image_url: { 
+                          url: fileData.image
+                        } 
+                      }
+                    ]
+                  }
+                ]
+             })
           });
-          result = { text: response.text };
+
+          if (!xaiResponse.ok) {
+            const errorRaw = await xaiResponse.text();
+            throw new Error(`Probe failed (${xaiResponse.status}): ${errorRaw}`);
+          }
+
+          const resultJson = await xaiResponse.json();
+          const summary = resultJson.choices?.[0]?.message?.content || 'No summary generated.';
+          result = { text: summary };
         } else {
           result = await agent.generate(messages, { maxSteps: 3 });
         }
@@ -368,7 +371,7 @@ export async function POST(req: NextRequest) {
         replyText += `\n\n[אבחון טכני: ${visionError}]`;
       }
 
-      const BUILD_ID = 'BUILD_14:20_STORE_FALSE';
+      const BUILD_ID = 'BUILD_14:30_DEEP_PROBE';
       const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
       
       // Global diagnostic for vision errors to help us debug
