@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
       const senderName = pushName || contactName || '';
 
       // Filters
-      const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי', 'קארין'];
+      const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי', 'קארין', 'סבינה גננת'];
       const blacklistedNumbers = ['972542619636', '0542619636', '542619636'];
       
       const isBlacklisted = (isIncoming && !isSuperUser && (
@@ -226,11 +226,10 @@ export async function POST(req: NextRequest) {
               } else if (isSupportedImage) {
                 console.log(`[VISION] Sending full image (Mime: ${mimeType}).`);
                 const base64 = fileBuffer.toString('base64');
-                const finalMime = mimeType === 'application/pdf' ? 'image/png' : mimeType;
                 fileData = { 
                    type: 'image', 
-                   image: `data:${finalMime};base64,${base64}`,
-                   mimeType: finalMime
+                   image: `data:${mimeType};base64,${base64}`,
+                   mimeType: mimeType
                 } as any;
               } else {
                 // HEIC/PDF without thumbnail
@@ -279,8 +278,11 @@ export async function POST(req: NextRequest) {
         .filter((h: any) => {
           const content = h.content || '';
           // Avoid diagnostic noise and empty/placeholder messages
+          // Also SANITIZE: Remove any messages containing the old document apology string to prevent history-poisoning
           return !content.includes('[אבחון טכני:') && 
                  !content.includes('_vBUILD_') && 
+                 !content.includes('לא יכולה לראות את המסמך') && 
+                 !content.includes('תקלה טכנית בניתוח המסמך') &&
                  content !== text && 
                  content !== placeholder;
         })
@@ -312,8 +314,11 @@ export async function POST(req: NextRequest) {
       let result: any;
       try {
         if (fileData) {
-          const visionSystemPrompt = "You are a professional document analysis agent. Analyze the provided image/document and summarize its content. Be precise.";
-          const mergedText = `${visionSystemPrompt}\n\nContext:\n${authInstructions}\n\nUser Query: ${text || 'Please provide a summary.'}`;
+          const visionSystemPrompt = `את רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹. 
+נתחי את המסמך או התמונה המצורפים בצורה מקצועית ושירותית. 
+הסבירי ללקוח/ה ${senderName} מה את רואה ואיך זה עוזר להם. 
+זכרי לשמור על טון לבבי ולהתחיל כל שורה ב-RLM (\u200F). 😊✨`;
+          const mergedText = `${visionSystemPrompt}\n\nUser Message/Context: ${text || 'Please analyze this.'}`;
 
           // DEEP PROBE: Use native fetch to see the RAW error from xAI
           const xaiResponse = await fetch('https://api.x.ai/v1/chat/completions', {
@@ -379,7 +384,7 @@ export async function POST(req: NextRequest) {
           
           result = await agent.generate(textOnlyMessages, {
             maxSteps: 3,
-            instructions: authInstructions + '\n\nשימי לב קריטי: הייתה שגיאה טכנית בניתוח המסמך שצורף. אל תנסי לנחש מה יש בו לפי היסטוריית השיחה (כמו החלק חילוף של יונדאי). פשוט התנצלי על התקלה הטכנית והסבירי שכרגע יש קושי מערכתי בקריאת קבצי PDF מסוימים, והציעי לשלוח שוב כצילום מסך רגיל (JPG).'
+            instructions: authInstructions + '\n\nשימי לב קריטי: חלה תקלה טכנית בניתוח המסמך/התמונה (אולי הקובץ כבד מדי או בפורמט לא מוכר). אל תנסי לנחש מה יש בו. פשוט הסבירי ברגישות ובטון האישי שלך (בתור רותם) שאת מתקשה כרגע לקרוא את הקובץ הספציפי הזה, והציעי לשלוח שוב כצילום מסך רגיל או להמתין לבדיקה של אדם. ✨'
           });
         } else {
           throw e;
@@ -390,16 +395,12 @@ export async function POST(req: NextRequest) {
       currentStage = 'sending_response';
       let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
       
-      if (visionError) {
-        replyText += `\n\n[אבחון טכני: ${visionError}]`;
-      }
-
-      const BUILD_ID = 'BUILD_14:80_FINAL_STABILITY';
-      const isVersionRequest = text?.includes('גרסה') || text?.includes('version');
-      
-      // Global diagnostic for vision errors to help us debug
-      if (visionError || isVersionRequest || isSuperUser) {
-         replyText += `\n\n_v${BUILD_ID}_`;
+      if (isSuperUser) {
+        if (visionError) {
+          replyText += `\n\n[אבחון טכני: ${visionError}]`;
+        }
+        const BUILD_ID = 'BUILD_14:95_STRICT_CONTEXT';
+        replyText += `\n\n_v${BUILD_ID}_`;
       }
 
       if (replyText.includes('[IGNORE]')) {
