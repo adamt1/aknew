@@ -399,7 +399,7 @@ export async function POST(req: NextRequest) {
         if (visionError) {
           replyText += `\n\n[אבחון טכני: ${visionError}]`;
         }
-        const BUILD_ID = 'BUILD_14:95_STRICT_CONTEXT';
+        const BUILD_ID = 'BUILD_15:00_FOCUS_READY';
         replyText += `\n\n_v${BUILD_ID}_`;
       }
 

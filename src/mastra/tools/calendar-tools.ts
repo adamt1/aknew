@@ -87,3 +87,36 @@ export const scheduleCalendarEvent = createTool({
     }
   }
 });
+
+export const listCalendarEvents = createTool({
+  id: "listCalendarEvents",
+  description: "Lists or searches for events on the Google Calendar. Use this when the user asks 'when did X happen?' or 'find my record of Y'.",
+  inputSchema: z.object({
+    q: z.string().optional().describe("Search query to filter events (e.g., 'cleaning supplies')."),
+    timeMin: z.string().describe("ISO-8601 start timestamp to search from (e.g. '2026-03-01T00:00:00Z')."),
+    timeMax: z.string().optional().describe("ISO-8601 end timestamp to search up to."),
+    calendar_id: z.string().default(process.env.GOOGLE_CALENDAR_ID || 'primary').describe("The Google Calendar ID.")
+  }),
+  execute: async (inputData) => {
+    try {
+      const events = await googleCalendar.listEvents(inputData.calendar_id, {
+        timeMin: inputData.timeMin,
+        timeMax: inputData.timeMax,
+        q: inputData.q
+      });
+
+      return {
+        success: true,
+        count: events.length,
+        events: events.map((e: any) => ({
+          summary: e.summary,
+          start: e.start?.dateTime || e.start?.date,
+          description: e.description
+        }))
+      };
+    } catch (error: any) {
+      console.error('[LIST_CALENDAR_TOOL_ERROR]', error);
+      return { success: false, error: error.message };
+    }
+  }
+});
