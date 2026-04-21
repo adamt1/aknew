@@ -3,7 +3,15 @@ import { google } from 'googleapis';
 const SCOPES = ['https://www.googleapis.com/auth/calendar'];
 
 const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
-const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+let privateKey = process.env.GOOGLE_PRIVATE_KEY || '';
+
+// SANITIZE: Remove potential quotes added by user in Vercel UI
+if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+  privateKey = privateKey.substring(1, privateKey.length - 1);
+}
+
+// SANITIZE: Handle literal newlines and escaped newlines (\n)
+privateKey = privateKey.replace(/\\n/g, '\n');
 
 if (!clientEmail || !privateKey) {
   console.warn('Google Calendar credentials not fully configured (GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY)');

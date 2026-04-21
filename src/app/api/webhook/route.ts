@@ -447,26 +447,11 @@ export async function POST(req: NextRequest) {
       currentStage = 'sending_response';
       let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
       
-      // FAIL-SAFE LINK INJECTION: Forcefully extract links from tool results if the AI forgot them
-      if (result.toolResults && Array.isArray(result.toolResults)) {
-        const calendarLinks = result.toolResults
-          .filter((tr: any) => tr.toolName === 'scheduleCalendarEvent' && tr.result?.add_to_your_calendar_link)
-          .map((tr: any) => tr.result.add_to_your_calendar_link);
-        
-        if (calendarLinks.length > 0) {
-          const uniqueLinks = [...new Set(calendarLinks)];
-          replyText += `\n\n\u200F🔗 *לינקים להוספה ליומן שלך:*`;
-          uniqueLinks.forEach((link: any, index: number) => {
-             replyText += `\n\u200F[${index + 1}] ${link}`;
-          });
-        }
-      }
-
       if (isSuperUser) {
         if (visionError) {
           replyText += `\n\n[אבחון טכני: ${visionError}]`;
         }
-        const BUILD_ID = 'BUILD_21.04.26_FAILSAFE_V3';
+        const BUILD_ID = 'BUILD_21.04.26_SYNC_FIX_V4';
         replyText += `\n\n_v${BUILD_ID}_`;
       }
 

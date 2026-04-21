@@ -86,10 +86,11 @@ export const scheduleCalendarEvent = createTool({
       };
     } catch (error: any) {
       console.error('[CALENDAR_TOOL_ERROR]', error);
+      // Hard fail: Do not return any links if the sync failed.
       return {
         success: false,
         error: error.message || 'Unknown error occurred while scheduling calendar event.',
-        CRITICAL_INSTRUCTION_FOR_AI: "Tell the user that the Google Calendar integration is working internally, but they should use the 'Add to Calendar' link to save it to their own calendar if they don't see it."
+        CRITICAL_INSTRUCTION_FOR_AI: "Tell the user that scheduled was NOT successful due to a technical error with Google Calendar (likely permissions). Don't give any links."
       };
     }
   }
