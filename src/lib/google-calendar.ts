@@ -3,7 +3,8 @@ import { google } from 'googleapis';
 const SCOPES = ['https://www.googleapis.com/auth/calendar'];
 
 const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
-let privateKey = process.env.GOOGLE_PRIVATE_KEY || '';
+const rawPrivateKey = process.env.GOOGLE_PRIVATE_KEY || '';
+const rawCalendarId = process.env.GOOGLE_CALENDAR_ID || 'tayardam25@gmail.com';
 
 /**
  * NUCLEAR SANITIZER:
@@ -29,14 +30,20 @@ function nuclearSanitizeKey(key: string): string {
   return cleaned;
 }
 
-const sanitizedKey = nuclearSanitizeKey(privateKey);
+// SWAP DETECTION: If rawCalendarId contains 'PRIVATE KEY', the variables were swapped in Vercel.
+let calendarId = rawCalendarId;
+let privateKeySource = rawPrivateKey;
 
-if (sanitizedKey) {
-   console.log(`[GOOGLE_AUTH_DEBUG] Sanitized Key Length: ${sanitizedKey.length}, Head: ${sanitizedKey.substring(0, 30)}...`);
+if (rawCalendarId.includes('BEGIN PRIVATE KEY')) {
+   console.warn('[SECURITY] GOOGLE_CALENDAR_ID contains a private key. Swapping internally.');
+   calendarId = 'tayardam25@gmail.com'; 
+   privateKeySource = rawCalendarId;
 }
 
+const sanitizedKey = nuclearSanitizeKey(privateKeySource);
+
 if (!clientEmail || !sanitizedKey) {
-  console.warn('Google Calendar credentials not fully configured (GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY)');
+  console.warn('Google Calendar credentials not fully configured');
 }
 
 const auth = new google.auth.JWT({
@@ -65,10 +72,12 @@ export interface CalendarEventPayload {
 }
 
 export const googleCalendar = {
-  createEvent: async (calendarId: string, event: CalendarEventPayload) => {
+  createEvent: async (cId: string, event: CalendarEventPayload) => {
     try {
+      // Use the provided cId unless it looks like a private key, then fallback to our sanitized calendarId
+      const activeId = (cId && !cId.includes('PRIVATE KEY')) ? cId : calendarId;
       const response = await calendar.events.insert({
-        calendarId,
+        calendarId: activeId,
         requestBody: event,
       });
       return response.data;
