@@ -451,7 +451,7 @@ export async function POST(req: NextRequest) {
         if (visionError) {
           replyText += `\n\n[אבחון טכני: ${visionError}]`;
         }
-        const BUILD_ID = 'BUILD_21.04.26_AUTH_HARDEN_V5';
+        const BUILD_ID = 'BUILD_21.04.26_DEBUG_V6';
         replyText += `\n\n_v${BUILD_ID}_`;
       }
 

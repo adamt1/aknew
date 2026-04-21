@@ -5,27 +5,43 @@ const SCOPES = ['https://www.googleapis.com/auth/calendar'];
 const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
 let privateKey = process.env.GOOGLE_PRIVATE_KEY || '';
 
-// SANITIZE: Remove potential quotes added by user in Vercel UI
-privateKey = privateKey.trim();
-if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
-  privateKey = privateKey.substring(1, privateKey.length - 1);
+/**
+ * NUCLEAR SANITIZER:
+ * Handles:
+ * 1. Surrounding double/single quotes.
+ * 2. Mixed escaped newlines (\\n vs \n).
+ * 3. Leading/trailing whitespace.
+ */
+function nuclearSanitizeKey(key: string): string {
+  let cleaned = key.trim();
+  
+  // Strip quotes
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    cleaned = cleaned.substring(1, cleaned.length - 1);
+  }
+  if (cleaned.startsWith("'") && cleaned.endsWith("'")) {
+    cleaned = cleaned.substring(1, cleaned.length - 1);
+  }
+  
+  // Fix newlines: handle both literal and escaped versions
+  cleaned = cleaned.replace(/\\n/g, '\n');
+  
+  return cleaned;
 }
 
-// SANITIZE: Handle literal newlines and escaped newlines (\n)
-privateKey = privateKey.replace(/\\n/g, '\n');
+const sanitizedKey = nuclearSanitizeKey(privateKey);
 
-// DIAGNOSTIC LOG (REDACTED)
-if (privateKey) {
-   console.log(`[GOOGLE_AUTH_DEBUG] Key Length: ${privateKey.length}, StartsWith: ${privateKey.substring(0, 30)}...`);
+if (sanitizedKey) {
+   console.log(`[GOOGLE_AUTH_DEBUG] Sanitized Key Length: ${sanitizedKey.length}, Head: ${sanitizedKey.substring(0, 30)}...`);
 }
 
-if (!clientEmail || !privateKey) {
+if (!clientEmail || !sanitizedKey) {
   console.warn('Google Calendar credentials not fully configured (GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY)');
 }
 
 const auth = new google.auth.JWT({
   email: clientEmail,
-  key: privateKey,
+  key: sanitizedKey,
   scopes: SCOPES,
 });
 
