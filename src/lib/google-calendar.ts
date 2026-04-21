@@ -6,12 +6,18 @@ const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
 let privateKey = process.env.GOOGLE_PRIVATE_KEY || '';
 
 // SANITIZE: Remove potential quotes added by user in Vercel UI
+privateKey = privateKey.trim();
 if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
   privateKey = privateKey.substring(1, privateKey.length - 1);
 }
 
 // SANITIZE: Handle literal newlines and escaped newlines (\n)
 privateKey = privateKey.replace(/\\n/g, '\n');
+
+// DIAGNOSTIC LOG (REDACTED)
+if (privateKey) {
+   console.log(`[GOOGLE_AUTH_DEBUG] Key Length: ${privateKey.length}, StartsWith: ${privateKey.substring(0, 30)}...`);
+}
 
 if (!clientEmail || !privateKey) {
   console.warn('Google Calendar credentials not fully configured (GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY)');
@@ -51,10 +57,12 @@ export const googleCalendar = {
       });
       return response.data;
     } catch (error: any) {
-      console.error('Error creating Google Calendar event:', error);
-      if (error.response?.data) {
-        console.error('Detailed Error Response:', JSON.stringify(error.response.data, null, 2));
-      }
+      console.error('[GOOGLE_CALENDAR_API_ERROR] Detail:', {
+        message: error.message,
+        code: error.code,
+        status: error.status,
+        response: error.response?.data
+      });
       throw error;
     }
   },
