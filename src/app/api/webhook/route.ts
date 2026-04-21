@@ -8,9 +8,11 @@ import { xai } from "@ai-sdk/xai";
 import { greenApi } from '@/lib/green-api';
 import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed } from '@/lib/supabase';
 import { elevenLabs } from '@/lib/elevenlabs';
+import heicConvert from 'heic-convert';
+import { processDueReminders } from '@/lib/reminders';
 
 export async function POST(req: NextRequest) {
-  const APP_VERSION = 'v4.2-VISION-READY';
+  const APP_VERSION = 'v4.9-FOCUS_FIX';
   console.time(`[${APP_VERSION}] webhook-total`);
 
   let body: any = {};
@@ -181,22 +183,55 @@ export async function POST(req: NextRequest) {
           if (fileBuffer) {
             console.log(`[MEDIA] Downloaded ${fileBuffer.length} bytes. Mime: ${mimeType}`);
             
-            // PDF to Image conversion for Vision
+            // HEIC/HEIF Support
+            if (mimeType.includes('heic') || mimeType.includes('heif')) {
+              try {
+                console.log('[VISION] Converting HEIC to JPG...');
+                fileBuffer = Buffer.from(await heicConvert({
+                  buffer: fileBuffer.buffer as ArrayBuffer,
+                  format: 'JPEG',
+                  quality: 0.8
+                }));
+                mimeType = 'image/jpeg';
+                console.log(`[VISION] HEIC converted to ${fileBuffer.length} bytes JPG.`);
+              } catch (heicErr: any) {
+                console.error(`[HEIC Conversion Error] ${heicErr.message}`);
+                throw new Error('אירעה שגיאה בעיבוד תמונה מהאייפון (HEIC). אנא שלח צילום מסך רגיל.');
+              }
+            }
+            
+            // PDF Extraction (Hybrid Flow: Text first, then Image)
             if (mimeType === 'application/pdf' && fileBuffer) {
               try {
-                console.log('[VISION] Converting PDF to image for analysis...');
+                console.log('[VISION] Extracting text from PDF...');
+                // @ts-ignore
+                const pdfParse = (await import('pdf-parse'));
+                const pdfData = await (pdfParse as any)(fileBuffer);
+                if (pdfData.text && pdfData.text.trim().length > 50) {
+                  const extractedText = pdfData.text.replace(/\n\s*\n/g, '\n').substring(0, 15000);
+                  text = `${text || '[מסמך PDF]'}\n\n--- תוכן טקסטואלי שחולץ מהמסמך ---\n${extractedText}`;
+                  // Mark as processed text-wise, might still try image thumbnail for context
+                  console.log(`[VISION] PDF text extracted: ${extractedText.length} chars.`);
+                }
+              } catch (pdfParseErr: any) {
+                console.error(`[PDF Parse Error] ${pdfParseErr.message}`);
+              }
+
+              // Try PDF to Image conversion as a fallback/visual context
+              try {
+                console.log('[VISION] Converting PDF to image for visual analysis...');
                 const pngPages = await pdfToPng(fileBuffer as any, { 
-                  pagesToProcess: [1],
-                  viewportScale: 2.0 
+                  pagesToProcess: Array.from({length: 3}, (_, i) => i + 1), // Limit to 3 for speed when text is available
+                  viewportScale: 1.5 // Lower scale for context
                 });
                 if (pngPages.length > 0 && pngPages[0].content) {
                   fileBuffer = Buffer.from(pngPages[0].content);
-                  mimeType = 'image/png'; // Update mimeType so isSupportedImage becomes true
-                  console.log(`[VISION] PDF converted to ${fileBuffer.length} bytes PNG.`);
+                  mimeType = 'image/png';
+                  console.log(`[VISION] PDF converted to image context.`);
                 }
               } catch (pdfErr: any) {
-                console.error(`[PDF Conversion Error] ${pdfErr.message}`);
-                // Continue, will fallback to thumbnail if exists
+                console.warn(`[PDF Image Fallback Failed] ${pdfErr.message}`);
+                // If text exists, we don't care about image conversion failing
               }
             }
 
@@ -231,10 +266,13 @@ export async function POST(req: NextRequest) {
                    image: `data:${mimeType};base64,${base64}`,
                    mimeType: mimeType
                 } as any;
+              } else if (text?.includes('--- תוכן טקסטואלי שחולץ מהמסמך ---')) {
+                // If we have text but no image, it's fine
+                console.log('[VISION] Proceeding with extracted text only.');
               } else {
-                // HEIC/PDF without thumbnail
+                // HEIC/PDF without thumbnail or text
                 const formatName = mimeType.split('/')[1]?.toUpperCase() || 'לא מוכר';
-                throw new Error(`פורמט ${formatName} דורש המרה לתמונה (JPG). אנא שלח צילום מסך רגיל.`);
+                throw new Error(`פורמט ${formatName} דורש המרה לתמונה (JPG) או שהוא מסמך סרוק ללא טקסט. אנא שלח צילום מסך רגיל.`);
               }
             }
             
@@ -276,17 +314,25 @@ export async function POST(req: NextRequest) {
 
       const historyLegacy = history
         .filter((h: any) => {
-          const content = h.content || '';
-          // Avoid diagnostic noise and empty/placeholder messages
-          // Also SANITIZE: Remove any messages containing the old document apology string to prevent history-poisoning
+          const content = (h.content || '').toLowerCase();
+          // RADICAL PURGE: If a message contains these noise-patterns, it is 100% BLOCKED from context
+          const isNoisy = 
+                 content.includes('מחיר הכפפות') || 
+                 content.includes('תרסיס אקונומיקה') || 
+                 content.includes('מחירי חומרי ניקיון') || 
+                 content.includes('שמחה לעזור לך עם כל הבקשות') ||
+                 content.includes('חומרי ניקיון שהיו חסרים') ||
+                 content.includes('סיכום של השיחה') ||
+                 content.includes('לינק יוסיף בהמשך');
+
+          if (isNoisy) return false;
+
           return !content.includes('[אבחון טכני:') && 
-                 !content.includes('_vBUILD_') && 
-                 !content.includes('לא יכולה לראות את המסמך') && 
-                 !content.includes('תקלה טכנית בניתוח המסמך') &&
-                 content !== text && 
-                 content !== placeholder;
+                 !content.includes('_vbuild_') && 
+                 content !== (text || '').toLowerCase() && 
+                 content !== (placeholder || '').toLowerCase();
         })
-        .slice(-6);
+        .slice(-3); // Even tighter focus: 3 messages max
       
       const promptContentParts: any[] = [];
       
@@ -314,11 +360,14 @@ export async function POST(req: NextRequest) {
       let result: any;
       try {
         if (fileData) {
-          const visionSystemPrompt = `את רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹. 
-נתחי את המסמך או התמונה המצורפים בצורה מקצועית ושירותית. 
-הסבירי ללקוח/ה ${senderName} מה את רואה ואיך זה עוזר להם. 
-זכרי לשמור על טון לבבי ולהתחיל כל שורה ב-RLM (\u200F). 😊✨`;
-          const mergedText = `${visionSystemPrompt}\n\nUser Message/Context: ${text || 'Please analyze this.'}`;
+          const visionSystemPrompt = `Objective Document Analyst Mode:
+1. Identify the document type (Car Insurance, ID, Invoice, etc.) based ONLY on the visual content.
+2. Extract key data points objectively (Names, Dates, Policy Numbers, Totals).
+3. DO NOT assume the document is related to the cleaning business or "איי קיי" unless explicitly mentioned in the text.
+4. If it's a Car Insurance document, focus on vehicle details, roadside assistance, and replacement car coverage.
+5. After the objective summary, provide a user-friendly response as 'Rotem' (the digital representative of 'איי קיי חברת ניקיון ואחזקה' 🧹), but ensure the facts remain 100% accurate to the image.
+6. Tone: Professional, service-oriented. Start each line with the hidden RLM (\u200F). 😊✨`;
+          const mergedText = `${visionSystemPrompt}\n\nUser Question/Instruction: ${text || 'Summarize this document accurately.'}`;
 
           // DEEP PROBE: Use native fetch to see the RAW error from xAI
           const xaiResponse = await fetch('https://api.x.ai/v1/chat/completions', {
@@ -328,9 +377,9 @@ export async function POST(req: NextRequest) {
                'Authorization': `Bearer ${process.env.XAI_API_KEY}`
              },
              body: JSON.stringify({
-                model: 'grok-4.20-0309-non-reasoning',
+                model: 'grok-4.20-0309-reasoning',
                 stream: false,
-                store: false,
+                store: true,
                 messages: [
                   {
                     role: 'user',
@@ -359,7 +408,8 @@ export async function POST(req: NextRequest) {
           visionError = `SUCCESS_PROBE (Status: ${xaiResponse.status}, Len: ${summary.length}, Head: ${summary.substring(0, 30)})`;
           result = { text: summary };
         } else {
-          result = await agent.generate(messages, { maxSteps: 3 });
+          // INCREASE STEPS: 8 steps allow for multiple tool calls in one go
+          result = await agent.generate(messages, { maxSteps: 8 });
         }
       } catch (e: any) {
         console.error(`[Vision AI Error/SDK] Error: ${e.message}`, e);
@@ -399,13 +449,22 @@ export async function POST(req: NextRequest) {
         if (visionError) {
           replyText += `\n\n[אבחון טכני: ${visionError}]`;
         }
-        const BUILD_ID = 'BUILD_15:00_FOCUS_READY';
+        const BUILD_ID = 'BUILD_21.04.26_RADICAL_V2';
         replyText += `\n\n_v${BUILD_ID}_`;
       }
 
       if (replyText.includes('[IGNORE]')) {
         await saveMessage(chatId, 'assistant', '[בוט התעלם - ברכת חג]');
         return NextResponse.json({ status: 'ignored_by_agent_policy' });
+      }
+
+      // CRITICAL: If vision failed, DO NOT guess. Stop here and return error.
+      if (visionError) {
+         const errorPrefix = `\u200Fסליחה אדם, חלה תקלה טכנית בקריאת הקובץ:`;
+         const finalErrorStr = `${errorPrefix}\n\n[אבחון טכני: ${visionError}]\n\nאנא נסה לשלוח שוב כצילום מסך (JPG).`;
+         await saveMessage(chatId, 'assistant', finalErrorStr);
+         await greenApi.sendMessage(chatId, finalErrorStr);
+         return NextResponse.json({ status: 'vision_error_hard_stop' });
       }
 
       await saveMessage(chatId, 'assistant', replyText);
@@ -426,6 +485,10 @@ export async function POST(req: NextRequest) {
       
       await greenApi.setChatPresence(chatId, 'paused');
       console.timeEnd(`[${APP_VERSION}] webhook-total`);
+
+      // Trigger a check for due reminders on every interaction (workaround for Hobby cron limits)
+      processDueReminders().catch(err => console.error('[REMINDER_TRIGGER_ERROR]', err));
+
       return NextResponse.json({ status: 'success', reply: replyText });
     }
 

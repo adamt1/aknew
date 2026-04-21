@@ -30,22 +30,29 @@ export const scheduleCalendarEvent = createTool({
           dateTime: inputData.end_time,
           timeZone: 'Asia/Jerusalem',
         },
+        reminders: {
+          useDefault: false,
+          overrides: [],
+        },
       };
 
       console.log(`[CALENDAR_TOOL] Scheduling event on calendar: "${inputData.calendar_id}"`);
       console.log(`[CALENDAR_TOOL] Time: ${inputData.start_time} to ${inputData.end_time}`);
 
       // Improved tool-level deduplication: Look for identical events in the last 24 hours
-      const now = new Date();
-      const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+      const startOfDay = new Date(inputData.start_time);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(inputData.start_time);
+      endOfDay.setHours(23, 59, 59, 999);
+
       const existingEvents = await googleCalendar.listEvents(inputData.calendar_id, {
-        timeMin: twentyFourHoursAgo,
+        timeMin: startOfDay.toISOString(),
+        timeMax: endOfDay.toISOString(),
         q: inputData.summary
       });
       
       const isDuplicate = existingEvents.find((e: any) => 
-        e.summary === inputData.summary && 
-        new Date(e.start?.dateTime || e.start?.date || '').toISOString() === new Date(inputData.start_time).toISOString()
+        e.summary === inputData.summary
       );
       
       if (isDuplicate) {

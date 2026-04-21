@@ -12,6 +12,28 @@ export const scheduleReminder = createTool({
   }),
   execute: async (inputData) => {
     try {
+      // 1. Tool-level deduplication: Check for identical pending reminders in a 6hr window
+      const sixHoursAgo = new Date(new Date(inputData.remind_at).getTime() - 6 * 60 * 60 * 1000).toISOString();
+      const sixHoursAhead = new Date(new Date(inputData.remind_at).getTime() + 6 * 60 * 60 * 1000).toISOString();
+      
+      const { data: existing } = await supabase
+        .from('reminders')
+        .select('*')
+        .eq('chat_id', inputData.chat_id)
+        .eq('reminder_text', inputData.reminder_text)
+        .eq('status', 'pending')
+        .gte('remind_at', sixHoursAgo)
+        .lte('remind_at', sixHoursAhead);
+
+      if (existing && existing.length > 0) {
+        console.log(`[REMINDER_TOOL] Duplicate reminder detected. Skipping.`);
+        return {
+          success: true,
+          message: 'Reminder already scheduled. Skipping duplicate.',
+          scheduled_for: existing[0].remind_at
+        };
+      }
+
       const { error } = await supabase
         .from('reminders')
         .insert([{

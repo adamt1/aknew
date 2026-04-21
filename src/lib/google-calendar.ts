@@ -28,6 +28,10 @@ export interface CalendarEventPayload {
     dateTime: string; // ISO-8601
     timeZone: string;
   };
+  reminders?: {
+    useDefault: boolean;
+    overrides: Array<{ method: string; minutes: number }>;
+  };
 }
 
 export const googleCalendar = {

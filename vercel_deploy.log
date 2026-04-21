@@ -1,0 +1,41 @@
+Retrieving project…
+Deploying adams-projects-6b7cadd5/aknew
+Uploading [--------------------] (0.0B/62B)
+Uploading [====================] (62.0B/62B)
+Inspect: https://vercel.com/adams-projects-6b7cadd5/aknew/DbctoHxaR42Z3PTrFDjJWGZCAir1 [3s]
+Production: https://aknew-ran7ao0b0-adams-projects-6b7cadd5.vercel.app [3s]
+https://aknew-ran7ao0b0-adams-projects-6b7cadd5.vercel.appBuilding...
+Building: Running build in Washington, D.C., USA (East) – iad1
+Building: Build machine configuration: 2 cores, 8 GB
+Building: Retrieving list of deployment files...
+Building: Retrieving list of deployment files...
+Building: Downloading 75 deployment files...
+Building: Restored build cache from previous deployment (62159Ao5ogkZF4VwLFKqF3b6Puf4)
+Building: Running "vercel build"
+Building: Vercel CLI 51.2.1
+Building: Installing dependencies...
+Building: up to date in 2s
+Building: 201 packages are looking for funding
+Building: run `npm fund` for details
+Building: Detected Next.js version: 16.1.6
+Building: Running "npm run build"
+Building: > static-filament@0.1.0 build
+Building: > next build
+Building: ▲ Next.js 16.1.6 (Turbopack)
+Building: Creating an optimized production build ...
+Building: ✓ Compiled successfully in 30.4s
+Building: Running TypeScript ...
+Building: Failed to compile.
+Building: ./src/mastra/agents/whatsapp-agent.ts:10:17
+Building: Type error: This expression is not callable.
+Building: Type 'String' has no call signatures.
+Building: 8 |   id: "whatsapp-agent",
+Building: 9 |   name: "Rotem ❤️",
+Building: > 10 |   instructions: `את רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹.
+Building: |                 ^
+Building: 11 |
+Building: 12 | זיהוי זהות ובעלי תפקידים:
+Building: 13 | - אדם (Adam) הוא הבעלים של העסק. המשתמשים עשויים לפנות ב-"היי אדם" - הם מתכוונים לבעלים, לא אלייך. עליך לענות תמיד בתור רותם. אם השולח הוא הבעלים (מסומן כ-"כן" ב-System Prompt), התייחסי אליו ככזה.
+Building: Next.js build worker exited with code: 1 and signal: null
+Building: Error: Command "npm run build" exited with 1
+Error: Command "npm run build" exited with 1
