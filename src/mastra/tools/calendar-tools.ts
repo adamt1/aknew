@@ -1,7 +1,12 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { googleCalendar } from "../../lib/google-calendar";
-import fs from 'fs';
+
+// Strip Z/UTC offset so Google Calendar honors timeZone: 'Asia/Jerusalem'.
+// The LLM often sends UTC times (e.g. "17:30Z") when the user means Israel local time.
+function stripUtcSuffix(iso: string): string {
+  return iso.replace(/Z$/, '').replace(/([+-]\d{2}:?\d{2})$/, '');
+}
 
 export const scheduleCalendarEvent = createTool({
   id: "scheduleCalendarEvent",
@@ -16,18 +21,19 @@ export const scheduleCalendarEvent = createTool({
   }),
   execute: async (inputData) => {
     try {
-      // DEBUG LOG
-      fs.appendFileSync('/tmp/calendar-tool-calls.txt', `[${new Date().toISOString()}] Called with: ${JSON.stringify(inputData)}\n`);
-      
+      // Strip Z/UTC offset so Google Calendar uses timeZone: 'Asia/Jerusalem' as local time.
+      const startLocal = stripUtcSuffix(inputData.start_time);
+      const endLocal = stripUtcSuffix(inputData.end_time);
+
       const event = {
         summary: inputData.summary,
         description: inputData.description,
         start: {
-          dateTime: inputData.start_time,
+          dateTime: startLocal,
           timeZone: 'Asia/Jerusalem',
         },
         end: {
-          dateTime: inputData.end_time,
+          dateTime: endLocal,
           timeZone: 'Asia/Jerusalem',
         },
         reminders: {
@@ -37,12 +43,12 @@ export const scheduleCalendarEvent = createTool({
       };
 
       console.log(`[CALENDAR_TOOL] Scheduling event on calendar: "${inputData.calendar_id}"`);
-      console.log(`[CALENDAR_TOOL] Time: ${inputData.start_time} to ${inputData.end_time}`);
+      console.log(`[CALENDAR_TOOL] Time (local): ${startLocal} to ${endLocal}`);
 
       // Improved tool-level deduplication: Look for identical events in the last 24 hours
-      const startOfDay = new Date(inputData.start_time);
+      const startOfDay = new Date(startLocal);
       startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(inputData.start_time);
+      const endOfDay = new Date(startLocal);
       endOfDay.setHours(23, 59, 59, 999);
 
       const existingEvents = await googleCalendar.listEvents(inputData.calendar_id, {
@@ -57,8 +63,8 @@ export const scheduleCalendarEvent = createTool({
       
       if (isDuplicate) {
          console.log(`[CALENDAR_TOOL] Detected duplicate event "${inputData.summary}" already exists. Skipping insertion.`);
-         const startStr = inputData.start_time.replace(/[-:]/g, '').split('.')[0];
-         const endStr = inputData.end_time.replace(/[-:]/g, '').split('.')[0];
+         const startStr = startLocal.replace(/[-:]/g, '').split('.')[0];
+         const endStr = endLocal.replace(/[-:]/g, '').split('.')[0];
          const addToCalendarUrl = `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(inputData.summary)}&dates=${startStr}/${endStr}&details=${encodeURIComponent(inputData.description || '')}&sf=true&output=xml`;
 
          return {
@@ -66,15 +72,15 @@ export const scheduleCalendarEvent = createTool({
            message: `Event "${inputData.summary}" was already scheduled. Returning details.`,
            event_link: isDuplicate.htmlLink,
            add_to_your_calendar_link: addToCalendarUrl,
-           start: inputData.start_time
+           start: startLocal
          };
       }
 
       const result = await googleCalendar.createEvent(inputData.calendar_id, event);
 
-      // Generate a "Add to Calendar" link for the user
-      const startStr = inputData.start_time.replace(/[-:]/g, '').split('.')[0];
-      const endStr = inputData.end_time.replace(/[-:]/g, '').split('.')[0];
+      // Generate a "Add to Calendar" link for the user (local time, no Z suffix)
+      const startStr = startLocal.replace(/[-:]/g, '').split('.')[0];
+      const endStr = endLocal.replace(/[-:]/g, '').split('.')[0];
       const addToCalendarUrl = `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(inputData.summary)}&dates=${startStr}/${endStr}&details=${encodeURIComponent(inputData.description || '')}&sf=true&output=xml`;
 
       return {
@@ -82,7 +88,7 @@ export const scheduleCalendarEvent = createTool({
         message: `Event "${inputData.summary}" scheduled successfully on Rotem's internal calendar. \n\nCRITICAL: Please provide this link to the user to add it to their own calendar: ${addToCalendarUrl}`,
         event_link: result.htmlLink,
         add_to_your_calendar_link: addToCalendarUrl,
-        start: inputData.start_time
+        start: startLocal
       };
     } catch (error: any) {
       console.error('[CALENDAR_TOOL_ERROR]', error);
@@ -117,6 +123,7 @@ export const listCalendarEvents = createTool({
         success: true,
         count: events.length,
         events: events.map((e: any) => ({
+          id: e.id,
           summary: e.summary,
           start: e.start?.dateTime || e.start?.date,
           description: e.description
@@ -124,6 +131,28 @@ export const listCalendarEvents = createTool({
       };
     } catch (error: any) {
       console.error('[LIST_CALENDAR_TOOL_ERROR]', error);
+      return { success: false, error: error.message };
+    }
+  }
+});
+
+export const deleteCalendarEvent = createTool({
+  id: "deleteCalendarEvent",
+  description: "Deletes an event from the Google Calendar. IMPORTANT: You must first find the event ID using 'listCalendarEvents'.",
+  inputSchema: z.object({
+    eventId: z.string().describe("The ID of the event to delete."),
+    calendar_id: z.string().default(process.env.GOOGLE_CALENDAR_ID || 'primary').describe("The Google Calendar ID.")
+  }),
+  execute: async (inputData) => {
+    try {
+      console.log(`[CALENDAR_TOOL] Deleting event ${inputData.eventId} from calendar: "${inputData.calendar_id}"`);
+      await googleCalendar.deleteEvent(inputData.calendar_id, inputData.eventId);
+      return {
+        success: true,
+        message: `Event deleted successfully.`
+      };
+    } catch (error: any) {
+      console.error('[DELETE_CALENDAR_TOOL_ERROR]', error);
       return { success: false, error: error.message };
     }
   }

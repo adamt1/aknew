@@ -1,15 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
-import { Agent } from "@mastra/core/agent";
 import { pdfToPng } from 'pdf-to-png-converter';
-import { generateText } from "ai";
-import { createOpenAI } from "@ai-sdk/openai";
-import { xai } from "@ai-sdk/xai";
 import { greenApi } from '@/lib/green-api';
 import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed } from '@/lib/supabase';
 import { elevenLabs } from '@/lib/elevenlabs';
 import heicConvert from 'heic-convert';
 import { processDueReminders } from '@/lib/reminders';
+
+function assertTrustedDownloadUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid download URL: ${url}`);
+  }
+  const allowedSuffixes = ['.greenapi.com', '.green-api.com'];
+  if (!allowedSuffixes.some(suffix => parsed.hostname.endsWith(suffix))) {
+    throw new Error(`Untrusted download URL host: ${parsed.hostname}`);
+  }
+}
 
 export async function POST(req: NextRequest) {
   const APP_VERSION = 'v4.9-FOCUS_FIX';
@@ -25,7 +34,7 @@ export async function POST(req: NextRequest) {
       console.warn('Failed to parse webhook body');
       return NextResponse.json({ status: 'invalid_json' });
     }
-    console.log('FULL WEBHOOK BODY:', JSON.stringify(body, null, 2));
+    console.log('[WEBHOOK] type:', body.typeWebhook, 'id:', body.idMessage);
     const type = body.typeWebhook;
 
     const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
@@ -54,12 +63,10 @@ export async function POST(req: NextRequest) {
       const chatIdClean = chatId.replace(/\D/g, '');
       const widNumber = (wid || '').split('@')[0].replace(/\D/g, '').trim();
       
-      const superUsers = ['972526672663', '0526672663', '526672663'];
-      const isSuperUser = superUsers.some(u => 
-        rawSenderClean.includes(u) || 
-        chatIdClean.includes(u) ||
-        (rawSenderClean.length >= 9 && u.endsWith(rawSenderClean.slice(-9)))
-      ) || (widNumber && (rawSenderClean.includes(widNumber) || chatIdClean.includes(widNumber)));
+      // Exact match on last 9 significant digits — avoids substring/forgery attacks via chatId
+      const SUPER_USER_SUFFIXES = new Set(['526672663']);
+      const senderSuffix = rawSenderClean.slice(-9);
+      const isSuperUser = senderSuffix.length === 9 && SUPER_USER_SUFFIXES.has(senderSuffix);
 
       if (chatId.endsWith('@g.us')) {
         console.log(`Ignoring group message from ${chatId}`);
@@ -106,6 +113,13 @@ export async function POST(req: NextRequest) {
       const typeMessage = messageData.typeMessage;
       const isVoiceMessage = typeMessage === 'audioMessage';
 
+      // NEW: Ignore non-content types like reactions, polls, etc.
+      const ignoredTypes = ['reactionMessage', 'pollMessage', 'pollUpdateMessage', 'editedMessage', 'deletedMessage', 'stickerMessage'];
+      if (isIncoming && ignoredTypes.includes(typeMessage)) {
+        console.log(`[FILTER] Ignoring non-content message type: ${typeMessage}`);
+        return NextResponse.json({ status: `ignored_${typeMessage}` });
+      }
+
       if (type === 'outgoingAPIMessageReceived') {
         return NextResponse.json({ status: 'ignored_api_outgoing' });
       }
@@ -140,9 +154,9 @@ export async function POST(req: NextRequest) {
 
       if (isVoiceMessage) {
         const downloadUrl = messageData.fileMessageData?.downloadUrl;
-        const idMessage = body.idMessage;
         if (downloadUrl) {
            try {
+             assertTrustedDownloadUrl(downloadUrl);
              const audioBuffer = await greenApi.downloadFile(downloadUrl);
              text = await elevenLabs.speechToText(audioBuffer);
            } catch (e: any) {
@@ -163,16 +177,16 @@ export async function POST(req: NextRequest) {
                             messageData.documentMessageData?.downloadUrl ||
                             messageData.videoMessageData?.downloadUrl;
         
-        const idMessage = body.idMessage;
-        let mimeType = messageData.fileMessageData?.mimeType || 
-                         messageData.imageMessageData?.mimeType || 
-                         messageData.documentMessageData?.mimeType || 
+        let mimeType = messageData.fileMessageData?.mimeType ||
+                         messageData.imageMessageData?.mimeType ||
+                         messageData.documentMessageData?.mimeType ||
                          messageData.videoMessageData?.mimeType ||
                          (isImage ? 'image/jpeg' : isVideo ? 'video/mp4' : 'application/pdf');
 
         try {
           let fileBuffer: Buffer | null = null;
           if (downloadUrl) {
+            assertTrustedDownloadUrl(downloadUrl);
             console.log(`[MEDIA] Downloading ${typeMessage} via URL: ${downloadUrl}`);
             fileBuffer = await greenApi.downloadFile(downloadUrl);
           } else if (idMessage) {
@@ -289,6 +303,14 @@ export async function POST(req: NextRequest) {
 
       await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
       const placeholder = isVoiceMessage ? '[הודעה קולית]' : '[קובץ/תמונה]';
+      
+      // CRITICAL: If no text and no media data, this is likely an empty event or unsupported type.
+      // Do not fallback to 'שלום' as it triggers unnecessary AI cycles.
+      if (!text && !isVoiceMessage && !isImage && !isDocument && !isVideo) {
+        console.log('[FILTER] No actionable text or media found. Skipping agent processing.');
+        return NextResponse.json({ status: 'no_actionable_content' });
+      }
+
       await saveMessage(chatId, 'user', text || placeholder);
       const history = await getHistory(chatId);
 
@@ -296,9 +318,7 @@ export async function POST(req: NextRequest) {
       const serverDate = new Date();
       
       const dateStrHe = messageDate.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-      const timeStrHe = messageDate.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
       const serverTimeHe = serverDate.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
-      const isSignificantDelay = Math.abs(serverDate.getTime() - messageDate.getTime()) > 3600000;
 
       const authInstructions = `
         הנחיות קריטיות:
@@ -307,50 +327,52 @@ export async function POST(req: NextRequest) {
         - כל שורה מתחילה ב-RLM (\u200F).
         - טון לבבי ושירותי 😊✨.
         - שם לקוח: ${senderName}. אדם (Owner): ${isSuperUser ? 'כן' : 'לא'}.
+        - **כלל מרכזי**: ענו **אך ורק** על ההודעה האחרונה (Current Message). ההיסטוריה למטה היא רקע בלבד - אל תבצעי ממנה שום פעולה, אל תחזרי על נוסחים שכבר שלחת, ואל תסכמי אותה.
       `;
 
       const agent = mastra.getAgent('whatsapp-agent');
       currentStage = 'agent_generation';
 
+      // HISTORY CONSTRUCTION: Filter aggressively to prevent context bleed
       const historyLegacy = history
         .filter((h: any) => {
           const content = (h.content || '').toLowerCase();
-          // RADICAL PURGE: Completely block messages containing noise topics seen in previous regressions
+          
+          // Filter out noisy/irrelevant messages
           const isNoisy = 
-                 content.includes('מחיר הכפפות') || 
-                 content.includes('תרסיס אקונומיקה') || 
-                 content.includes('מחירי חומרי ניקיון') || 
+                 content.includes('[אבחון טכני:') || 
+                 content.includes('_vbuild_') ||
                  content.includes('שמחה לעזור לך עם כל הבקשות') ||
-                 content.includes('חומרי ניקיון שהיו חסרים') ||
                  content.includes('סיכום של השיחה') ||
                  content.includes('לינק יוסיף בהמשך') ||
-                 content.includes('משרדים בחודש אפריל') ||
-                 content.includes('פגישה עם') && content.includes('[לינק');
+                 (content.includes('פגישה עם') && content.includes('[לינק'));
 
           if (isNoisy) return false;
 
-          return !content.includes('[אבחון טכני:') && 
-                 !content.includes('_vbuild_') && 
-                 content !== (text || '').toLowerCase() && 
-                 content !== (placeholder || '').toLowerCase();
+          // Don't include the message we just saved (it's going as the current user message)
+          if (content === (text || '').toLowerCase() || content === (placeholder || '').toLowerCase()) return false;
+
+          return true;
         })
-        .slice(-2); // Extreme focus: Only 2 latest messages
+        .slice(-2); // Only 2 latest messages for context
       
       const promptContentParts: any[] = [];
       
       if (fileData) {
-        // Reorder: Image FIRST
         promptContentParts.push(fileData);
       }
 
       promptContentParts.push({ type: 'text', text: text || 'שלום' });
 
+      // Build messages with a hard context boundary
       const messages: any[] = [
         { role: 'system', content: authInstructions },
         ...historyLegacy.map((h: any) => ({
           role: h.role === 'assistant' ? 'assistant' : 'user',
           content: h.content,
         })),
+        // HARD CONTEXT BOUNDARY: Tell the agent that everything above is done
+        { role: 'system', content: '--- סוף היסטוריה. כל מה שלמעלה הוא רקע בלבד, כבר טופל ונשלח. הבקשה הנוכחית היא **רק** ההודעה הבאה. ענו **אך ורק** עליה. ---' },
         { role: 'user', content: promptContentParts }
       ];
 
@@ -371,17 +393,16 @@ export async function POST(req: NextRequest) {
 6. Tone: Professional, service-oriented. Start each line with the hidden RLM (\u200F). 😊✨`;
           const mergedText = `${visionSystemPrompt}\n\nUser Question/Instruction: ${text || 'Summarize this document accurately.'}`;
 
-          // DEEP PROBE: Use native fetch to see the RAW error from xAI
-          const xaiResponse = await fetch('https://api.x.ai/v1/chat/completions', {
+          // GPT-4.1 Vision via OpenAI API
+          const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
              method: 'POST',
              headers: {
                'Content-Type': 'application/json',
-               'Authorization': `Bearer ${process.env.XAI_API_KEY}`
+               'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
              },
              body: JSON.stringify({
-                model: 'grok-4.20-0309-reasoning',
+                model: 'gpt-4.1',
                 stream: false,
-                store: true,
                 messages: [
                   {
                     role: 'user',
@@ -400,14 +421,14 @@ export async function POST(req: NextRequest) {
              })
           });
 
-          const resultJson = await xaiResponse.json();
+          const resultJson = await openaiResponse.json();
 
-          if (!xaiResponse.ok) {
-            throw new Error(`Probe failed (${xaiResponse.status}): ${JSON.stringify(resultJson).substring(0, 500)}`);
+          if (!openaiResponse.ok) {
+            throw new Error(`OpenAI Vision failed (${openaiResponse.status}): ${JSON.stringify(resultJson).substring(0, 500)}`);
           }
 
           const summary = resultJson.choices?.[0]?.message?.content || 'No summary generated.';
-          visionError = `SUCCESS_PROBE (Status: ${xaiResponse.status}, Len: ${summary.length}, Head: ${summary.substring(0, 30)})`;
+          visionError = null; // Success - no error
           result = { text: summary };
         } else {
           // INCREASE STEPS: 8 steps allow for multiple tool calls in one go
@@ -451,7 +472,7 @@ export async function POST(req: NextRequest) {
         if (visionError) {
           replyText += `\n\n[אבחון טכני: ${visionError}]`;
         }
-        const BUILD_ID = 'BUILD_23.04.26_ONESHOT_V8';
+        const BUILD_ID = 'BUILD_29.04.26_GPT41_VISION';
         replyText += `\n\n_v${BUILD_ID}_`;
       }
 
@@ -504,6 +525,6 @@ export async function POST(req: NextRequest) {
         await greenApi.sendMessage(chatId, errorMsg);
       }
     } catch (e) {}
-    return NextResponse.json({ error: error.message }, { status: 200 });
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

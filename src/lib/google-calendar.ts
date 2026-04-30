@@ -86,6 +86,7 @@ export const googleCalendar = {
       const response = await calendar.events.list({
         calendarId,
         timeMin: options.timeMin,
+        timeMax: options.timeMax,
         q: options.q,
         singleEvents: true,
       });
@@ -93,6 +94,18 @@ export const googleCalendar = {
     } catch (error: any) {
       console.error('Error listing Google Calendar events:', error);
       return [];
+    }
+  },
+  deleteEvent: async (calendarId: string, eventId: string) => {
+    try {
+      await calendar.events.delete({
+        calendarId,
+        eventId,
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('[GOOGLE_CALENDAR_DELETE_ERROR]', error);
+      throw error;
     }
   },
 };
