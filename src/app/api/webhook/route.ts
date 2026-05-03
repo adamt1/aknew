@@ -320,6 +320,8 @@ export async function POST(req: NextRequest) {
       const dateStrHe = messageDate.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
       const serverTimeHe = serverDate.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
 
+      const isNewContact = !isSuperUser && history.filter((h: any) => h.role === 'assistant').length === 0;
+
       const authInstructions = `
         הנחיות קריטיות:
         - היום ${dateStrHe}. שעה: ${serverTimeHe}.
@@ -328,6 +330,7 @@ export async function POST(req: NextRequest) {
         - טון לבבי ושירותי 😊✨.
         - שם לקוח: ${senderName}. אדם (Owner): ${isSuperUser ? 'כן' : 'לא'}.
         - **כלל מרכזי**: ענו **אך ורק** על ההודעה האחרונה (Current Message). ההיסטוריה למטה היא רקע בלבד - אל תבצעי ממנה שום פעולה, אל תחזרי על נוסחים שכבר שלחת, ואל תסכמי אותה.
+        ${isNewContact ? `- **לקוח/מספר חדש**: זוהי הפנייה הראשונה. **חובה** להציג את עצמך בתחילת התשובה: "שלום, אני רותם, הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה 🧹" — ואז לענות על הבקשה.` : ''}
       `;
 
       const agent = mastra.getAgent('whatsapp-agent');
