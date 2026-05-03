@@ -34,12 +34,23 @@ export async function getHistory(threadId: string) {
 export async function isBotActive(threadId: string) {
   const { data, error } = await supabase
     .from('threads')
-    .select('is_bot_active')
+    .select('is_bot_active, updated_at')
     .eq('id', threadId)
     .single();
-  
+
   if (error || !data) return true; // Default to active if not found
-  return data.is_bot_active;
+  if (data.is_bot_active) return true;
+
+  // Auto-restore: if bot was disabled more than 3 hours ago, re-enable automatically
+  const disabledAt = new Date(data.updated_at);
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  if (disabledAt < threeHoursAgo) {
+    await supabase.from('threads').upsert([{ id: threadId, is_bot_active: true, updated_at: new Date().toISOString() }]);
+    console.log(`[BOT_AUTO_RESTORED] Thread ${threadId} re-enabled after 3h inactivity.`);
+    return true;
+  }
+
+  return false;
 }
 
 export async function setBotStatus(threadId: string, isActive: boolean) {
