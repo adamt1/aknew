@@ -126,9 +126,15 @@ export async function POST(req: NextRequest) {
 
       if (isOutgoing && isSuperUser) {
         if (chatId !== rawSender && (!wid || !chatId.includes(widNumber))) {
-          console.log(`[HUMAN_INTERVENTION] Owner messaged ${chatId}. Disabling bot.`);
-          await setBotStatus(chatId, false);
-          return NextResponse.json({ status: 'bot_disabled_by_owner' });
+          const ownerCmd = (text || '').trim().toLowerCase();
+          if (ownerCmd === 'בוט' || ownerCmd === 'bot') {
+            await setBotStatus(chatId, true);
+            console.log(`[BOT_REACTIVATED] Bot re-enabled for ${chatId} by owner command.`);
+          } else {
+            await setBotStatus(chatId, false);
+            console.log(`[HUMAN_INTERVENTION] Owner messaged ${chatId}. Disabling bot.`);
+          }
+          return NextResponse.json({ status: 'handled_outgoing_superuser' });
         }
       }
 
