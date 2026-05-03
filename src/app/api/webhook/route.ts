@@ -14,7 +14,7 @@ function assertTrustedDownloadUrl(url: string): void {
   } catch {
     throw new Error(`Invalid download URL: ${url}`);
   }
-  const allowedSuffixes = ['.greenapi.com', '.green-api.com'];
+  const allowedSuffixes = ['.greenapi.com', '.green-api.com', '.digitaloceanspaces.com'];
   if (!allowedSuffixes.some(suffix => parsed.hostname.endsWith(suffix))) {
     throw new Error(`Untrusted download URL host: ${parsed.hostname}`);
   }
@@ -483,8 +483,9 @@ export async function POST(req: NextRequest) {
 
       // CRITICAL: If vision failed, DO NOT guess. Stop here and return error.
       if (visionError) {
-         const errorPrefix = `\u200Fסליחה אדם, חלה תקלה טכנית בקריאת הקובץ:`;
-         const finalErrorStr = `${errorPrefix}\n\n[אבחון טכני: ${visionError}]\n\nאנא נסה לשלוח שוב כצילום מסך (JPG).`;
+         const finalErrorStr = isSuperUser
+           ? `\u200Fסליחה אדם, חלה תקלה טכנית בקריאת הקובץ:\n\n[אבחון טכני: ${visionError}]\n\nאנא נסה לשלוח שוב כצילום מסך (JPG).`
+           : `\u200Fסליחה, לא הצלחתי לפתוח את הקובץ שצירפת 🙏\n\u200Fאנא שלחי אותו שוב כצילום מסך רגיל (JPG) ואשמח לעזור 😊`;
          await saveMessage(chatId, 'assistant', finalErrorStr);
          await greenApi.sendMessage(chatId, finalErrorStr);
          return NextResponse.json({ status: 'vision_error_hard_stop' });
