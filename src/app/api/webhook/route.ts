@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
 
       // Filters
       const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי', 'קארין', 'סבינה גננת'];
-      const blacklistedNumbers = ['972542619636', '0542619636', '542619636'];
+      const blacklistedNumbers = ['972542619636', '0542619636', '542619636', '998910366781'];
       
       const isBlacklisted = (isIncoming && !isSuperUser && (
         blacklist.some(name => (senderName && senderName.includes(name))) ||
@@ -151,6 +151,17 @@ export async function POST(req: NextRequest) {
       const isImage = typeMessage === 'imageMessage';
       const isDocument = typeMessage === 'documentMessage';
       const isVideo = typeMessage === 'videoMessage';
+
+      // Non-super users sending images: acknowledge without analysis
+      if (isImage && !isSuperUser) {
+        const ackMsg = `\u200Fקיבלתי את התמונה, אני מעבירה את זה להמשך טיפול 🙏`;
+        await greenApi.setChatPresence(chatId, 'composing');
+        await saveMessage(chatId, 'user', '[תמונה]');
+        await saveMessage(chatId, 'assistant', ackMsg);
+        await greenApi.sendMessage(chatId, ackMsg);
+        await greenApi.setChatPresence(chatId, 'paused');
+        return NextResponse.json({ status: 'image_acknowledged' });
+      }
 
       if (isVoiceMessage) {
         const downloadUrl = messageData.fileMessageData?.downloadUrl;
