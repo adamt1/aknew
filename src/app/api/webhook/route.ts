@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
       const senderName = contactName || pushName || '';
 
       // Filters
-      const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי', 'קארין', 'סבינה גננת'];
+      const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי', 'קארין', 'סבינה גננת', 'ירון שרעבי'];
       const blacklistedNumbers = ['972542619636', '0542619636', '542619636', '998910366781'];
       
       const isBlacklisted = (isIncoming && !isSuperUser && (
