@@ -376,26 +376,9 @@ export async function POST(req: NextRequest) {
       let historyForPrompt: any[] = [];
 
       if (isSuperUser) {
-        // OWNER (Adam): Each message is independent. Only include history if there's
-        // an active rapid-fire conversation (last message within 2 minutes).
-        const lastMsg = history.filter((h: any) => h.created_at).pop();
-        const lastMsgAge = lastMsg ? (now.getTime() - new Date(lastMsg.created_at).getTime()) : Infinity;
-        const isActiveConversation = lastMsgAge < 2 * 60 * 1000; // 2 minutes
-        
-        if (isActiveConversation) {
-          // Only include the LAST user message (no assistant responses — those contain tool output/calendar links)
-          const lastUserMsg = history.filter((h: any) => {
-            if (h.role !== 'user') return false;
-            const content = (h.content || '').toLowerCase();
-            // Skip the message we just saved
-            if (content === (text || '').toLowerCase()) return false;
-            return true;
-          }).pop();
-          if (lastUserMsg) {
-            historyForPrompt = [{ role: 'user', content: lastUserMsg.content }];
-          }
-        }
-        // If not active conversation → historyForPrompt stays empty → clean slate
+        // OWNER (Adam): Every message is fully independent — no history injection.
+        // Injecting only the previous user message (without the assistant reply) caused
+        // the model to respond to both the old and new question simultaneously.
       } else {
         // CLIENTS: Include recent, clean history for conversational context (menu flow, etc.)
         historyForPrompt = history
