@@ -599,13 +599,13 @@ export async function POST(req: NextRequest) {
 
       if (isVoiceMessage) {
          try {
-           await greenApi.sendMessage(chatId, replyText);
            let ttsText = replyText.replace(/https?:\/\/[^\s]+/g, '').trim();
            const ttsBuffer = await elevenLabs.textToSpeech(ttsText);
            const uploadUrl = await greenApi.uploadFile(ttsBuffer, 'audio/mpeg', 'reply.mp3');
            await greenApi.sendFileByUrl(chatId, uploadUrl, 'reply.mp3');
          } catch (e: any) {
            console.error(`[TTS Error] ${e.message}`);
+           await greenApi.sendMessage(chatId, replyText);
          }
       } else {
          await greenApi.sendMessage(chatId, replyText);
