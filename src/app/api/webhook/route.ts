@@ -176,14 +176,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ status: 'ignored_bot' });
       }
 
-      if (isIncoming && isAccountant) {
-        const accountantReply = '\u200Fהיי אייל';
-        await saveMessage(chatId, 'user', text || '[הודעה]');
-        await saveMessage(chatId, 'assistant', accountantReply);
-        await greenApi.sendMessage(chatId, accountantReply);
-        return NextResponse.json({ status: 'accountant_fixed_reply' });
-      }
-
       const active = await isBotActive(chatId);
       if (!active && !isSuperUser) {
         return NextResponse.json({ status: 'bot_inactive' });
