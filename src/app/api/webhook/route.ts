@@ -7,6 +7,36 @@ import { elevenLabs } from '@/lib/elevenlabs';
 import heicConvert from 'heic-convert';
 import { processDueReminders } from '@/lib/reminders';
 
+function isRateLimitError(e: any): boolean {
+  const msg = (e?.message || '').toLowerCase();
+  const status = e?.status || e?.statusCode || e?.response?.status;
+  return status === 429 || msg.includes('too many requests') || msg.includes('rate limit') || msg.includes('ratelimit');
+}
+
+async function agentGenerateWithRetry(
+  agent: any,
+  messages: any[],
+  options: any,
+  maxRetries = 3
+): Promise<any> {
+  let lastError: any;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await agent.generate(messages, options);
+    } catch (e: any) {
+      lastError = e;
+      if (isRateLimitError(e) && attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 8000); // 1s, 2s, 4s max 8s
+        console.warn(`[RATE_LIMIT] Attempt ${attempt + 1}/${maxRetries + 1} failed. Retrying in ${delay}ms...`);
+        await new Promise(res => setTimeout(res, delay));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastError;
+}
+
 function assertTrustedDownloadUrl(url: string): void {
   let parsed: URL;
   try {
@@ -536,7 +566,7 @@ export async function POST(req: NextRequest) {
           result = { text: summary };
         } else {
           // INCREASE STEPS: 8 steps allow for multiple tool calls in one go
-          result = await agent.generate(messages, { maxSteps: 8 });
+          result = await agentGenerateWithRetry(agent, messages, { maxSteps: 8 });
         }
       } catch (e: any) {
         console.error(`[Vision AI Error/SDK] Error: ${e.message}`, e);
@@ -559,7 +589,7 @@ export async function POST(req: NextRequest) {
              return m;
           });
           
-          result = await agent.generate(textOnlyMessages, {
+          result = await agentGenerateWithRetry(agent, textOnlyMessages, {
             maxSteps: 3,
             instructions: authInstructions + '\n\nשימי לב קריטי: חלה תקלה טכנית בניתוח המסמך/התמונה (אולי הקובץ כבד מדי או בפורמט לא מוכר). אל תנסי לנחש מה יש בו. פשוט הסבירי ברגישות ובטון האישי שלך (בתור רותם) שאת מתקשה כרגע לקרוא את הקובץ הספציפי הזה, והציעי לשלוח שוב כצילום מסך רגיל או להמתין לבדיקה של אדם. ✨'
           });
@@ -626,7 +656,17 @@ export async function POST(req: NextRequest) {
     try {
       const chatId = body?.senderData?.chatId || body?.chatId || body?.messageData?.chatId;
       if (chatId) {
-        const errorMsg = `\u200F⚠️ *שגיאת מערכת:* (${currentStage})\n\u200Fפירוט: ${error.message}`;
+        const rawSender = body?.senderData?.sender || '';
+        const isSuperUserCtx = rawSender.replace(/\D/g, '').slice(-9) === '526672663';
+        let errorMsg: string;
+        if (isRateLimitError(error)) {
+          console.warn(`[RATE_LIMIT_FINAL] All retries exhausted at stage: ${currentStage}`);
+          errorMsg = isSuperUserCtx
+            ? `\u200F⚠️ *Rate Limit (${currentStage}):* ה-API של Grok עמוס. נסה שוב בעוד כמה שניות.`
+            : `\u200Fסליחה, אני עמוסה כרגע 🙏\n\u200Fנסה/י שוב בעוד כמה שניות 😊`;
+        } else {
+          errorMsg = `\u200F⚠️ *שגיאת מערכת:* (${currentStage})\n\u200Fפירוט: ${error.message}`;
+        }
         await greenApi.sendMessage(chatId, errorMsg);
       }
     } catch (e) {}
