@@ -177,7 +177,7 @@ export async function POST(req: NextRequest) {
       }
 
       if (isIncoming && isAccountant) {
-        const accountantReply = '\u200Fהיי אייל, לא צריך את כל השם.';
+        const accountantReply = '\u200Fהיי אייל';
         await saveMessage(chatId, 'user', text || '[הודעה]');
         await saveMessage(chatId, 'assistant', accountantReply);
         await greenApi.sendMessage(chatId, accountantReply);
