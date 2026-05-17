@@ -125,7 +125,7 @@ export async function POST(req: NextRequest) {
 
       // Filters
       const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי', 'קארין', 'סבינה גננת', 'ירון שרעבי', 'חברה שחלו', 'שחלו עובדת', 'זהבה'];
-      const blacklistedNumbers = ['972546349803', '0546349803', '546349803', '972542619636', '0542619636', '542619636', '998910366781'];
+      const blacklistedNumbers = ['972546349803', '0546349803', '546349803', '972542619636', '0542619636', '542619636', '998910366781', '972536553345', '536553345'];
       
       const isBlacklisted = (isIncoming && !isSuperUser && (
         blacklist.some(name => (senderName && senderName.includes(name))) ||
