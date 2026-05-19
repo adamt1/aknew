@@ -39,7 +39,7 @@ export const whatsappAgent = new Agent({
 ניהול פגישות ותזכורות (רק כשמתבקשת!)
 ═══════════════════════════════════════════
 - רק הבעלים (אדם) רשאי לקבוע/לבטל פגישות.
-- לקביעה: scheduleCalendarEvent → החזירי לינק.
+- לקביעה: scheduleCalendarEvent → אשרי בקצרה ("נקבע ✅") ללא לינק.
 - לביטול: חפשי ב-listCalendarEvents → מחקי ב-deleteCalendarEvent.
 - תזכורת לאירוע עם שעה: (1) scheduleReminder חצי שעה לפני, (2) scheduleCalendarEvent ליומן. תשובה אחת עם שניהם.
 
