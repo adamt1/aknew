@@ -10,7 +10,7 @@ function stripUtcSuffix(iso: string): string {
 
 export const scheduleCalendarEvent = createTool({
   id: "scheduleCalendarEvent",
-  description: "Schedules a meeting or event on Google Calendar. Use this when the user specifically asks to set a meeting/appointment. You MUST calculate the start and end ISO-8601 timestamps. IMPORTANT: NEVER call this tool to create 'documentation', 'logs', or 'summaries' on today's date. Only call it for the actual event requested.",
+  description: "Records an entry in Google Calendar. Use this for ANY recording request: meetings, appointments, supply logs, cleaning records, documentation, or anything the user asks to add to calendar or record. You MUST calculate the start and end ISO-8601 timestamps. When recording a log/supply entry, set start_time to the current time and end_time 30 minutes later.",
   inputSchema: z.object({
     summary: z.string().describe("Title of the meeting."),
     description: z.string().optional().describe("Optional description or notes for the meeting."),
