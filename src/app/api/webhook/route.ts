@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { mastra } from '@/mastra';
-import { pdfToPng } from 'pdf-to-png-converter';
+
 import { greenApi } from '@/lib/green-api';
 import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed } from '@/lib/supabase';
 import { elevenLabs } from '@/lib/elevenlabs';
@@ -262,39 +262,48 @@ export async function POST(req: NextRequest) {
               }
             }
             
-            // PDF Extraction (Hybrid Flow: Text first, then Image)
+            // PDF Processing — TEXT FIRST (reliable, no native canvas deps)
+            let pdfTextExtracted = false;
             if (mimeType === 'application/pdf' && fileBuffer) {
               originalPdfBuffer = fileBuffer;
+              
+              // Step 1: Extract text (always works on serverless — no native deps)
               try {
-                console.log('[VISION] Extracting text from PDF...');
-                // @ts-ignore
-                const pdfParse = (await import('pdf-parse'));
-                const pdfData = await (pdfParse as any)(fileBuffer);
-                if (pdfData.text && pdfData.text.trim().length > 50) {
-                  const extractedText = pdfData.text.replace(/\n\s*\n/g, '\n').substring(0, 15000);
-                  text = `${text || '[מסמך PDF]'}\n\n--- תוכן טקסטואלי שחולץ מהמסמך ---\n${extractedText}`;
-                  // Mark as processed text-wise, might still try image thumbnail for context
-                  console.log(`[VISION] PDF text extracted: ${extractedText.length} chars.`);
+                console.log('[PDF] Extracting text from PDF...');
+                const { PDFParse } = await import('pdf-parse');
+                const parser = new PDFParse({ data: fileBuffer });
+                const pdfData = await parser.getText();
+                if (pdfData.text && pdfData.text.trim().length > 10) {
+                  text = `${text || '[מסמך PDF]'}\n\n--- תוכן שחולץ מהמסמך ---\n${pdfData.text.substring(0, 12000)}`;
+                  pdfTextExtracted = true;
+                  console.log(`[PDF] Text extracted successfully: ${pdfData.text.trim().length} chars.`);
                 }
-              } catch (pdfParseErr: any) {
-                console.error(`[PDF Parse Error] ${pdfParseErr.message}`);
+                await parser.destroy();
+              } catch (pdfTextErr: any) {
+                console.warn(`[PDF getText Error] ${pdfTextErr.message}`);
               }
-
-              // Try PDF to Image conversion as a fallback/visual context
-              try {
-                console.log('[VISION] Converting PDF to image for visual analysis...');
-                const pngPages = await pdfToPng(fileBuffer as any, { 
-                  pagesToProcess: Array.from({length: 3}, (_, i) => i + 1), // Limit to 3 for speed when text is available
-                  viewportScale: 1.5 // Lower scale for context
-                });
-                if (pngPages.length > 0 && pngPages[0].content) {
-                  fileBuffer = Buffer.from(pngPages[0].content);
-                  mimeType = 'image/png';
-                  console.log(`[VISION] PDF converted to image context.`);
+              
+              // Step 2: If text extraction failed, try image conversion (may fail on serverless)
+              if (!pdfTextExtracted) {
+                try {
+                  console.log('[PDF] Text extraction failed/empty, trying screenshot...');
+                  const { PDFParse } = await import('pdf-parse');
+                  const parser = new PDFParse({ data: fileBuffer });
+                  const screenshotRes = await parser.getScreenshot({ scale: 1.5, first: 1 });
+                  if (screenshotRes?.pages?.length > 0 && screenshotRes.pages[0].dataUrl) {
+                    const dataUrl = screenshotRes.pages[0].dataUrl;
+                    const parts = dataUrl.split(',');
+                    const mimeMatch = parts[0].match(/:(.*?);/);
+                    if (mimeMatch && parts[1]) {
+                      mimeType = mimeMatch[1];
+                      fileBuffer = Buffer.from(parts[1], 'base64');
+                      console.log(`[PDF] Converted to image via getScreenshot.`);
+                    }
+                  }
+                  await parser.destroy();
+                } catch (ssErr: any) {
+                  console.warn(`[PDF getScreenshot Error (expected on serverless)] ${ssErr.message}`);
                 }
-              } catch (pdfErr: any) {
-                console.warn(`[PDF Image Fallback Failed] ${pdfErr.message}`);
-                // If text exists, we don't care about image conversion failing
               }
             }
 
@@ -303,13 +312,16 @@ export async function POST(req: NextRequest) {
             const isSupportedImage = SUPPORTED_VISION_MIMES.includes(mimeType);
             const thumbnail = isImage ? messageData.imageMessageData?.jpegThumbnail : messageData.documentMessageData?.jpegThumbnail;
 
-            if ((isImage || isDocument) && fileBuffer) {
+            // If PDF text was extracted, skip vision entirely — use text-only agent path
+            if (pdfTextExtracted) {
+              fileData = null;
+              console.log('[PDF] Text extracted successfully — skipping vision, using agent text path.');
+            } else if ((isImage || isDocument) && fileBuffer) {
               const MAX_SIZE = 5 * 1024 * 1024; // 5MB limit
               const useThumbnail = !isSupportedImage || fileBuffer.length > MAX_SIZE;
 
               if (useThumbnail && thumbnail) {
                  console.log(`[VISION] Using thumbnail for ${mimeType}`);
-                 // IMPORTANT: Use raw base64 WITHOUT the prefix for the 'image' field
                  const cleanThumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, '').replace(/\s/g, '');
                  
                  fileData = { 
@@ -330,14 +342,10 @@ export async function POST(req: NextRequest) {
                    mimeType: mimeType
                 } as any;
               } else if (text && text.length > 10) {
-                // If we have any extracted text (even short), proceed with text-only analysis
+                // Have extracted text — proceed with text-only analysis
                 console.log('[VISION] Proceeding with extracted text only (no image available).');
-              } else if (originalPdfBuffer) {
-                // Scanned PDF with no text layer and no thumbnail — send raw PDF to GPT-4.1 which supports it natively
-                console.log('[VISION] Falling back to GPT-4.1 native PDF processing (scanned document).');
-                fileData = { type: 'pdf_native', pdfBase64: originalPdfBuffer.toString('base64') } as any;
               } else {
-                // No image, no thumbnail, no text, no PDF buffer — truly can't process
+                // No image, no thumbnail, no text — truly can't process
                 const formatName = mimeType.split('/')[1]?.toUpperCase() || 'לא מוכר';
                 throw new Error(`פורמט ${formatName} דורש המרה לתמונה (JPG) או שהוא מסמך סרוק ללא טקסט. אנא שלח צילום מסך רגיל.`);
               }
@@ -392,7 +400,8 @@ export async function POST(req: NextRequest) {
           - הציגי את עצמך בכל פנייה חדשה ("היי אייל, אני רותם, הנציגה הדיגיטלית של איי קיי 😊✨").
           - כשהוא מבקש משהו מאדם — ענו בסגנון: "אין בעיה, אני מעדכנת את אדם והוא יחזור אליך בהקדם 🙏". אל תנסי לטפל בבקשה בעצמך.
           - אם הוא שואל שאלה כללית שאת יכולה לענות — עני בשמחה.` : ''}
-        ${isNewContact ? `- **מספר חדש — קראי את ההודעה לפני הכל**: זוהי הפנייה הראשונה. **אל תשלחי אוטומטית תפריט פתיחה.** קודם כל הבני את ההקשר:\n  • אם ההודעה היא מ**שליח / קורייר / חברת משלוחים** — ענה ישירות על הבקשה הלוגיסטית בלבד. ללא הצגה עצמית, ללא תפריט.\n  • אם ההודעה היא **פנייה עסקית אמיתית** — הציגי את עצמך ואחר כך הצגת תפריט:\n  \\"היי${contactName ? ' ' + contactName : (senderName ? ' ' + senderName : '')}, אני רותם, הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה 😊✨\\"\n  \\"כדי שאוכל לעזור לך בצורה הטובה ביותר, ספר/י לי מי את/ה:\n  1️⃣ לקוח/ה קיים/ת — שאלה, שינוי או בקשה\n  2️⃣ לקוח/ה חדש/ה — מחיר, מידע על שירותים\n  3️⃣ אחר — ספק, שיתוף פעולה או נושא אחר\\"\n  • בכל מקרה אחר — ענה בטבעיות בלי תפריט.` : ''}
+        ${isNewContact ? `- **מספר חדש — קראי את ההודעה לפני הכל**: זוהי הפנייה הראשונה. **אל תשלחי אוטומטית תפריט פתיחה.** קודם כל הבני את ההקשר:\n  • אם מתוכן ההודעה משתמע בבירור שזה **לקוח קיים** (למשל: פונים אל "אדם", מבקשים חומרי ניקיון כמו אקונומיקה או שקיות שחורות, מדווחים על חוסרים במשרד, או מדברים על בעיות ניקיון) — **זה לקוח קיים!** בשום אופן אל תציגי את עצמך ואל תשלחי תפריט! עני בטבעיות, בצורה שירותית קצרה, והבטיחי שתעבירי לאדם לטיפול.
+  • אם ההודעה היא מ**שליח / קורייר / חברת משלוחים** — ענה ישירות על הבקשה הלוגיסטית בלבד. ללא הצגה עצמית, ללא תפריט.\n  • אם ההודעה היא **פנייה עסקית אמיתית** — הציגי את עצמך ואחר כך הצגת תפריט:\n  \\"היי${contactName ? ' ' + contactName : (senderName ? ' ' + senderName : '')}, אני רותם, הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה 😊✨\\"\n  \\"כדי שאוכל לעזור לך בצורה הטובה ביותר, ספר/י לי מי את/ה:\n  1️⃣ לקוח/ה קיים/ת — שאלה, שינוי או בקשה\n  2️⃣ לקוח/ה חדש/ה — מחיר, מידע על שירותים\n  3️⃣ אחר — ספק, שיתוף פעולה או נושא אחר\\"\n  • בכל מקרה אחר — ענה בטבעיות בלי תפריט.` : ''}
       `;
 
       const agent = mastra.getAgent('whatsapp-agent');
@@ -470,54 +479,7 @@ export async function POST(req: NextRequest) {
 
       let result: any;
       try {
-        if (fileData?.type === 'pdf_native') {
-          // GPT-4.1 native PDF support — handles scanned PDFs without image conversion
-          console.log('[VISION] Using GPT-4.1 native PDF processing.');
-          const pdfSystemPrompt = `אתה מנתח מסמכים אובייקטיבי. ענה תמיד בעברית.
-1. זהה את סוג המסמך (ביטוח, חשבונית, קבלה, דוח דלק וכו') לפי התוכן בלבד.
-2. חלץ את כל נקודות המידע: שמות, תאריכים, מספרים, סכומים, פריטים.
-3. הצג סיכום ברור ומסודר.
-4. לאחר הסיכום, ענה בתור "רותם", הנציגה הדיגיטלית של "איי קיי חברת ניקיון ואחזקה" 🧹.
-5. כל שורה מתחילה ב-RLM (\u200F). טון מקצועי ושירותי 😊✨`;
-
-          // OpenAI Responses API (/v1/responses) — supports PDF natively via input_file
-          const pdfOpenAiResponse = await fetch('https://api.openai.com/v1/responses', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-            },
-            body: JSON.stringify({
-              model: 'gpt-4.1',
-              input: [
-                {
-                  role: 'user',
-                  content: [
-                    {
-                      type: 'input_file',
-                      filename: 'document.pdf',
-                      file_data: `data:application/pdf;base64,${fileData.pdfBase64}`
-                    },
-                    {
-                      type: 'input_text',
-                      text: `${pdfSystemPrompt}\n\nשאלה/הוראה: ${text || 'אנא סכם את המסמך הזה בעברית.'}`
-                    }
-                  ]
-                }
-              ]
-            })
-          });
-
-          const pdfResultJson = await pdfOpenAiResponse.json();
-          if (!pdfOpenAiResponse.ok) {
-            throw new Error(`GPT-4.1 Responses API PDF failed (${pdfOpenAiResponse.status}): ${JSON.stringify(pdfResultJson).substring(0, 300)}`);
-          }
-          // Responses API format: { output: [{ type: "message", content: [{ type: "output_text", text: "..." }] }] }
-          const pdfSummary = pdfResultJson.output?.[0]?.content?.[0]?.text || 'לא ניתן לסכם את המסמך.';
-          visionError = null;
-          result = { text: pdfSummary };
-
-        } else if (fileData) {
+        if (fileData) {
           const visionSystemPrompt = `Objective Document Analyst Mode:
 1. Identify the document type (Car Insurance, ID, Invoice, etc.) based ONLY on the visual content.
 2. Extract key data points objectively (Names, Dates, Policy Numbers, Totals).
@@ -535,7 +497,7 @@ export async function POST(req: NextRequest) {
                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
              },
              body: JSON.stringify({
-                model: 'gpt-4.1',
+                model: 'gpt-4o',
                 stream: false,
                 messages: [
                   {
@@ -572,7 +534,6 @@ export async function POST(req: NextRequest) {
         console.error(`[Vision AI Error/SDK] Error: ${e.message}`, e);
         if (fileData) {
           let errorDetail = e.message;
-          // Capture deep server response if available (400 validation error body)
           if (e.response?.data) {
              errorDetail = `${e.message} ServerResponse: ${JSON.stringify(e.response.data).substring(0, 500)}`;
           } else if (e.cause) {
@@ -582,17 +543,9 @@ export async function POST(req: NextRequest) {
           const imgHead = (typeof fileData.image === 'string') ? fileData.image.substring(0, 30) : 'Binary';
           const imgInfo = (typeof fileData.image === 'string') ? `DataURL(${fileData.image.length}) Head: ${imgHead}` : `Buf`;
           visionError = `${errorDetail} (Mime: ${fileData.mimeType || 'unknown'}, Img: ${imgInfo}, Chat: ${chatId}, Owner: ${isSuperUser})`;
-          const textOnlyMessages = messages.map((m: any) => {
-             if (m.role === 'user' && Array.isArray(m.content)) {
-                return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
-             }
-             return m;
-          });
           
-          result = await agentGenerateWithRetry(agent, textOnlyMessages, {
-            maxSteps: 3,
-            instructions: authInstructions + '\n\nשימי לב קריטי: חלה תקלה טכנית בניתוח המסמך/התמונה (אולי הקובץ כבד מדי או בפורמט לא מוכר). אל תנסי לנחש מה יש בו. פשוט הסבירי ברגישות ובטון האישי שלך (בתור רותם) שאת מתקשה כרגע לקרוא את הקובץ הספציפי הזה, והציעי לשלוח שוב כצילום מסך רגיל או להמתין לבדיקה של אדם. ✨'
-          });
+          // Don't run agent again — go straight to the hard-stop error block below
+          result = { text: '' };
         } else {
           throw e;
         }
@@ -606,11 +559,11 @@ export async function POST(req: NextRequest) {
         if (visionError) {
           replyText += `\n\n[אבחון טכני: ${visionError}]`;
         }
-        const BUILD_ID = 'BUILD_28.05.26_OWNER_CALENDAR_FIX';
+        const BUILD_ID = 'BUILD_09.06.26_PDF_TEXT_FIRST';
         replyText += `\n\n_v${BUILD_ID}_`;
       }
 
-      if (replyText.includes('[IGNORE]')) {
+      if (replyText.includes('[IGNORE]') || replyText.toLowerCase().includes('no response needed') || replyText.toLowerCase().includes('ignore')) {
         await saveMessage(chatId, 'assistant', '[בוט התעלם - ברכת חג]');
         return NextResponse.json({ status: 'ignored_by_agent_policy' });
       }
