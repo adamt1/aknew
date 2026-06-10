@@ -78,6 +78,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
+
+    // STALE MESSAGE FILTER: Ignore messages older than 3 minutes to prevent
+    // replying to old queued messages after Green API subscription renewal
+    const messageTimestamp = body.timestamp;
+    if (messageTimestamp && (isIncoming || isOutgoing)) {
+      const nowUnix = Math.floor(Date.now() / 1000);
+      const ageSeconds = nowUnix - messageTimestamp;
+      const MAX_AGE_SECONDS = 180; // 3 minutes
+      if (ageSeconds > MAX_AGE_SECONDS) {
+        console.log(`[STALE_FILTER] Ignoring stale message (age: ${ageSeconds}s, max: ${MAX_AGE_SECONDS}s). ID: ${idMessage}, Type: ${type}`);
+        return NextResponse.json({ status: 'ignored_stale_message', ageSeconds });
+      }
+    }
     if (isIncoming || isOutgoing) {
       const { senderData, messageData } = body;
       
