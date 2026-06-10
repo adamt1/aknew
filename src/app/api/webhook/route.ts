@@ -50,6 +50,48 @@ function assertTrustedDownloadUrl(url: string): void {
   }
 }
 
+/**
+ * Validates that extracted text is actually readable and not garbled.
+ * Hebrew PDFs often extract as garbage Unicode due to broken font mapping.
+ * The garbled chars typically fall in Arabic Extended-A (U+08xx) and control char ranges.
+ * Returns true only if text has enough recognizable chars AND no significant junk.
+ */
+function isReadableText(text: string): boolean {
+  if (!text || text.trim().length < 10) return false;
+  
+  const cleaned = text.replace(/[\s\t\n\r]+/g, '');
+  if (cleaned.length === 0) return false;
+  
+  let recognizable = 0;
+  let junkChars = 0;
+  for (const char of cleaned) {
+    const code = char.codePointAt(0)!;
+    if (
+      (code >= 0x0590 && code <= 0x05FF) || // Hebrew
+      (code >= 0x0600 && code <= 0x06FF) || // Arabic
+      (code >= 0x0020 && code <= 0x007F) || // Basic Latin (ASCII)
+      (code >= 0x00A0 && code <= 0x024F)    // Latin Extended
+    ) {
+      recognizable++;
+    }
+    // Detect garbled font-mapping chars: Arabic Extended-A (U+08A0-U+08FF),
+    // Samaritan, Mandaic, and control chars (U+0000-U+001F)
+    if (
+      (code >= 0x0800 && code <= 0x08FF) || // Samaritan, Mandaic, Arabic Ext-A
+      (code >= 0x0000 && code <= 0x001F && code !== 0x000A && code !== 0x000D) // Control chars (except newline)
+    ) {
+      junkChars++;
+    }
+  }
+  
+  const recognizableRatio = recognizable / cleaned.length;
+  const junkRatio = junkChars / cleaned.length;
+  // Text is readable if: high recognizable ratio AND low junk ratio
+  const isReadable = recognizableRatio >= 0.5 && junkRatio < 0.05;
+  console.log(`[PDF_QUALITY] Recognizable: ${(recognizableRatio * 100).toFixed(1)}% (${recognizable}/${cleaned.length}), Junk: ${(junkRatio * 100).toFixed(1)}% (${junkChars}). Readable: ${isReadable}`);
+  return isReadable;
+}
+
 export async function POST(req: NextRequest) {
   const APP_VERSION = 'v5.0-PDF_NATIVE';
   console.time(`[${APP_VERSION}] webhook-total`);
@@ -275,31 +317,38 @@ export async function POST(req: NextRequest) {
               }
             }
             
-            // PDF Processing — TEXT FIRST (reliable, no native canvas deps)
+            // PDF Processing — with text quality validation and multi-layer fallback
             let pdfTextExtracted = false;
             if (mimeType === 'application/pdf' && fileBuffer) {
               originalPdfBuffer = fileBuffer;
               
-              // Step 1: Extract text (always works on serverless — no native deps)
+              // Step 1: Try text extraction
               try {
                 console.log('[PDF] Extracting text from PDF...');
                 const { PDFParse } = await import('pdf-parse');
                 const parser = new PDFParse({ data: fileBuffer });
                 const pdfData = await parser.getText();
-                if (pdfData.text && pdfData.text.trim().length > 10) {
-                  text = `${text || '[מסמך PDF]'}\n\n--- תוכן שחולץ מהמסמך ---\n${pdfData.text.substring(0, 12000)}`;
+                const rawText = pdfData.text || '';
+                
+                // CRITICAL: Validate text quality — Hebrew PDFs often extract as garbled Unicode
+                if (rawText.trim().length > 10 && isReadableText(rawText)) {
+                  text = `${text || '[מסמך PDF]'}\n\n--- תוכן שחולץ מהמסמך ---\n${rawText.substring(0, 12000)}`;
                   pdfTextExtracted = true;
-                  console.log(`[PDF] Text extracted successfully: ${pdfData.text.trim().length} chars.`);
+                  console.log(`[PDF] Text extracted and validated: ${rawText.trim().length} chars.`);
+                } else if (rawText.trim().length > 10) {
+                  console.warn(`[PDF] Text extracted (${rawText.trim().length} chars) but FAILED quality check — garbled text detected. Falling back to Vision.`);
+                } else {
+                  console.warn(`[PDF] Text extraction returned insufficient text (${rawText.trim().length} chars).`);
                 }
                 await parser.destroy();
               } catch (pdfTextErr: any) {
                 console.warn(`[PDF getText Error] ${pdfTextErr.message}`);
               }
               
-              // Step 2: If text extraction failed, try image conversion (may fail on serverless)
+              // Step 2: If text extraction failed/garbled, try screenshot (may fail on serverless)
               if (!pdfTextExtracted) {
                 try {
-                  console.log('[PDF] Text extraction failed/empty, trying screenshot...');
+                  console.log('[PDF] Trying screenshot conversion...');
                   const { PDFParse } = await import('pdf-parse');
                   const parser = new PDFParse({ data: fileBuffer });
                   const screenshotRes = await parser.getScreenshot({ scale: 1.5, first: 1 });
@@ -325,10 +374,10 @@ export async function POST(req: NextRequest) {
             const isSupportedImage = SUPPORTED_VISION_MIMES.includes(mimeType);
             const thumbnail = isImage ? messageData.imageMessageData?.jpegThumbnail : messageData.documentMessageData?.jpegThumbnail;
 
-            // If PDF text was extracted, skip vision entirely — use text-only agent path
+            // If PDF text was extracted AND validated, skip vision — use text-only agent path
             if (pdfTextExtracted) {
               fileData = null;
-              console.log('[PDF] Text extracted successfully — skipping vision, using agent text path.');
+              console.log('[PDF] Clean text extracted — skipping vision, using agent text path.');
             } else if ((isImage || isDocument) && fileBuffer) {
               const MAX_SIZE = 5 * 1024 * 1024; // 5MB limit
               const useThumbnail = !isSupportedImage || fileBuffer.length > MAX_SIZE;
@@ -354,8 +403,18 @@ export async function POST(req: NextRequest) {
                    image: `data:${mimeType};base64,${base64}`,
                    mimeType: mimeType
                 } as any;
+              } else if (isDocument && mimeType === 'application/pdf' && originalPdfBuffer && originalPdfBuffer.length <= 20 * 1024 * 1024) {
+                // FALLBACK: Send PDF as base64 directly to GPT-4o (supports PDF input natively)
+                console.log(`[VISION] No thumbnail available. Sending PDF directly as base64 (${originalPdfBuffer.length} bytes).`);
+                const base64 = originalPdfBuffer.toString('base64');
+                fileData = { 
+                   type: 'image', 
+                   image: `data:application/pdf;base64,${base64}`,
+                   mimeType: 'application/pdf'
+                } as any;
+                text = `${text || '[מסמך PDF]'} (מסמך PDF מצורף לניתוח)`;
               } else if (text && text.length > 10) {
-                // Have extracted text — proceed with text-only analysis
+                // Have some extracted text — proceed with text-only analysis
                 console.log('[VISION] Proceeding with extracted text only (no image available).');
               } else {
                 // No image, no thumbnail, no text — truly can't process
@@ -572,7 +631,7 @@ export async function POST(req: NextRequest) {
         if (visionError) {
           replyText += `\n\n[אבחון טכני: ${visionError}]`;
         }
-        const BUILD_ID = 'BUILD_09.06.26_PDF_TEXT_FIRST';
+        const BUILD_ID = 'BUILD_10.06.26_PDF_QUALITY_CHECK';
         replyText += `\n\n_v${BUILD_ID}_`;
       }
 
