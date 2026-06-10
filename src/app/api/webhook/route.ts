@@ -345,26 +345,23 @@ export async function POST(req: NextRequest) {
                 console.warn(`[PDF getText Error] ${pdfTextErr.message}`);
               }
               
-              // Step 2: If text extraction failed/garbled, try screenshot (may fail on serverless)
+              // Step 2: If text extraction failed/garbled, convert PDF to PNG image
               if (!pdfTextExtracted) {
                 try {
-                  console.log('[PDF] Trying screenshot conversion...');
-                  const { PDFParse } = await import('pdf-parse');
-                  const parser = new PDFParse({ data: fileBuffer });
-                  const screenshotRes = await parser.getScreenshot({ scale: 1.5, first: 1 });
-                  if (screenshotRes?.pages?.length > 0 && screenshotRes.pages[0].dataUrl) {
-                    const dataUrl = screenshotRes.pages[0].dataUrl;
-                    const parts = dataUrl.split(',');
-                    const mimeMatch = parts[0].match(/:(.*?);/);
-                    if (mimeMatch && parts[1]) {
-                      mimeType = mimeMatch[1];
-                      fileBuffer = Buffer.from(parts[1], 'base64');
-                      console.log(`[PDF] Converted to image via getScreenshot.`);
-                    }
+                  console.log('[PDF] Text not usable — converting PDF to PNG image...');
+                  const { pdfToPng } = await import('pdf-to-png-converter');
+                  const pages = await pdfToPng(new Uint8Array(fileBuffer).buffer, {
+                    disableFontFace: true,
+                    viewportScale: 2.0,
+                    pagesToProcess: [1],
+                  });
+                  if (pages.length > 0 && pages[0].content) {
+                    mimeType = 'image/png';
+                    fileBuffer = pages[0].content;
+                    console.log(`[PDF] Converted to PNG successfully (${fileBuffer.length} bytes).`);
                   }
-                  await parser.destroy();
-                } catch (ssErr: any) {
-                  console.warn(`[PDF getScreenshot Error (expected on serverless)] ${ssErr.message}`);
+                } catch (pngErr: any) {
+                  console.warn(`[PDF-to-PNG Error] ${pngErr.message}`);
                 }
               }
             }
@@ -403,16 +400,32 @@ export async function POST(req: NextRequest) {
                    image: `data:${mimeType};base64,${base64}`,
                    mimeType: mimeType
                 } as any;
-              } else if (isDocument && mimeType === 'application/pdf' && originalPdfBuffer && originalPdfBuffer.length <= 20 * 1024 * 1024) {
-                // FALLBACK: Send PDF as base64 directly to GPT-4o (supports PDF input natively)
-                console.log(`[VISION] No thumbnail available. Sending PDF directly as base64 (${originalPdfBuffer.length} bytes).`);
-                const base64 = originalPdfBuffer.toString('base64');
-                fileData = { 
-                   type: 'image', 
-                   image: `data:application/pdf;base64,${base64}`,
-                   mimeType: 'application/pdf'
-                } as any;
-                text = `${text || '[מסמך PDF]'} (מסמך PDF מצורף לניתוח)`;
+              } else if (isDocument && mimeType === 'application/pdf' && originalPdfBuffer) {
+                // FALLBACK: Convert PDF to PNG image, then send to GPT-4o Vision
+                try {
+                  console.log(`[VISION] No thumbnail. Converting PDF to PNG (${originalPdfBuffer.length} bytes)...`);
+                  const { pdfToPng } = await import('pdf-to-png-converter');
+                  const pages = await pdfToPng(new Uint8Array(originalPdfBuffer).buffer, {
+                    disableFontFace: true,
+                    viewportScale: 2.0,
+                    pagesToProcess: [1],
+                  });
+                  if (pages.length > 0 && pages[0].content) {
+                    const pngBase64 = pages[0].content.toString('base64');
+                    fileData = {
+                      type: 'image',
+                      image: `data:image/png;base64,${pngBase64}`,
+                      mimeType: 'image/png'
+                    } as any;
+                    text = `${text || '[מסמך PDF]'} (תמונה שהומרה מ-PDF מצורפת לניתוח)`;
+                    console.log(`[VISION] PDF converted to PNG successfully (${pages[0].content.length} bytes).`);
+                  } else {
+                    throw new Error('pdfToPng returned no pages');
+                  }
+                } catch (pngErr: any) {
+                  console.error(`[VISION] PDF-to-PNG conversion failed: ${pngErr.message}`);
+                  throw new Error(`לא הצלחתי להמיר את ה-PDF לתמונה. אנא שלח צילום מסך (JPG) של המסמך.`);
+                }
               } else if (text && text.length > 10) {
                 // Have some extracted text — proceed with text-only analysis
                 console.log('[VISION] Proceeding with extracted text only (no image available).');
