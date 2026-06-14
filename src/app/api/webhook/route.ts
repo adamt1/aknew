@@ -92,6 +92,19 @@ function isReadableText(text: string): boolean {
   return isReadable;
 }
 
+/**
+ * Cleans titles and returns the first name (first word) of the user.
+ */
+function getFirstName(name: string): string {
+  if (!name) return '';
+  let cleanName = name.trim();
+  const titlePattern = /^(רו"ח|עו"ד|ד"ר|מר|גב'|רואה\s+חשבון|עורך\s+דין|דוקטור|הצדיק|הרב)\s+/i;
+  cleanName = cleanName.replace(titlePattern, '');
+  
+  const parts = cleanName.split(/\s+/);
+  return parts[0] || '';
+}
+
 export async function POST(req: NextRequest) {
   const APP_VERSION = 'v5.0-PDF_NATIVE';
   console.time(`[${APP_VERSION}] webhook-total`);
@@ -242,16 +255,20 @@ export async function POST(req: NextRequest) {
       const isDocument = typeMessage === 'documentMessage';
       const isVideo = typeMessage === 'videoMessage';
 
-      // Non-super users sending media (images, documents, videos): acknowledge without analysis
-      if ((isImage || isDocument || isVideo) && !isSuperUser) {
-        const mediaLabel = isImage ? 'תמונה' : isDocument ? 'מסמך' : 'וידאו';
-        const ackMsg = `\u200Fקיבלתי את ה${mediaLabel}, אני מעבירה את זה להמשך טיפול 🙏`;
+      // Intercept files and document links for non-super users
+      const hasUrl = text && /(https?:\/\/[^\s]+)/gi.test(text);
+      const hasDocKeywords = text && /(מסמך|קובץ|חתימה|חוזה|טופס)/gi.test(text);
+      const isDocumentLink = hasUrl && hasDocKeywords;
+
+      if (!isSuperUser && (isImage || isDocument || isVideo || isDocumentLink)) {
+        const ackMsg = `\u200Fקיבלתי את המסמך ואני מעבירה את זה להמשך טיפול.`;
         await greenApi.setChatPresence(chatId, 'composing');
-        await saveMessage(chatId, 'user', `[${mediaLabel}]`);
+        const userSavedText = isDocumentLink ? text : `[${isImage ? 'תמונה' : isDocument ? 'מסמך' : 'וידאו'}]`;
+        await saveMessage(chatId, 'user', userSavedText);
         await saveMessage(chatId, 'assistant', ackMsg);
         await greenApi.sendMessage(chatId, ackMsg);
         await greenApi.setChatPresence(chatId, 'paused');
-        return NextResponse.json({ status: `${mediaLabel}_acknowledged` });
+        return NextResponse.json({ status: 'document_intercepted_and_acknowledged' });
       }
 
       if (isVoiceMessage) {
@@ -322,13 +339,12 @@ export async function POST(req: NextRequest) {
             if (mimeType === 'application/pdf' && fileBuffer) {
               originalPdfBuffer = fileBuffer;
               
-              // Step 1: Try text extraction
+              // Step 1: Try text extraction using unpdf (serverless-safe, no worker needed)
               try {
-                console.log('[PDF] Extracting text from PDF...');
-                const { PDFParse } = await import('pdf-parse');
-                const parser = new PDFParse({ data: fileBuffer });
-                const pdfData = await parser.getText();
-                const rawText = pdfData.text || '';
+                console.log('[PDF] Extracting text with unpdf...');
+                const { getDocumentProxy, extractText } = await import('unpdf');
+                const pdfProxy = await getDocumentProxy(new Uint8Array(fileBuffer));
+                const { text: rawText } = await extractText(pdfProxy, { mergePages: true });
                 
                 // CRITICAL: Validate text quality — Hebrew PDFs often extract as garbled Unicode
                 if (rawText.trim().length > 10 && isReadableText(rawText)) {
@@ -340,26 +356,35 @@ export async function POST(req: NextRequest) {
                 } else {
                   console.warn(`[PDF] Text extraction returned insufficient text (${rawText.trim().length} chars).`);
                 }
-                await parser.destroy();
               } catch (pdfTextErr: any) {
                 console.warn(`[PDF getText Error] ${pdfTextErr.message}`);
               }
               
-              // Step 2: If text extraction failed/garbled, convert PDF to PNG image
+              // Step 2: If text extraction failed/garbled, render PDF to PNG with unpdf + @napi-rs/canvas
               if (!pdfTextExtracted) {
                 try {
-                  console.log('[PDF] Text not usable — converting PDF to PNG image...');
-                  const { pdfToPng } = await import('pdf-to-png-converter');
-                  const pages = await pdfToPng(new Uint8Array(fileBuffer).buffer, {
-                    disableFontFace: true,
-                    viewportScale: 2.0,
-                    pagesToProcess: [1],
-                  });
-                  if (pages.length > 0 && pages[0].content) {
-                    mimeType = 'image/png';
-                    fileBuffer = pages[0].content;
-                    console.log(`[PDF] Converted to PNG successfully (${fileBuffer.length} bytes).`);
-                  }
+                  console.log('[PDF] Text not usable — rendering PDF to PNG...');
+                  const napiCanvas = await import('@napi-rs/canvas');
+                  // Inject canvas globals for pdfjs rendering engine
+                  globalThis.DOMMatrix = napiCanvas.DOMMatrix as any;
+                  if (typeof globalThis.ImageData === 'undefined') globalThis.ImageData = napiCanvas.ImageData as any;
+                  if (typeof globalThis.Path2D === 'undefined') globalThis.Path2D = napiCanvas.Path2D as any;
+
+                  const { getDocumentProxy } = await import('unpdf');
+                  const pdfProxy = await getDocumentProxy(new Uint8Array(fileBuffer));
+                  const page = await pdfProxy.getPage(1);
+                  const viewport = page.getViewport({ scale: 2.0 });
+                  const w = Math.floor(viewport.width);
+                  const h = Math.floor(viewport.height);
+                  const canvas = napiCanvas.createCanvas(w, h);
+                  const ctx = canvas.getContext('2d');
+                  
+                  await page.render({ canvasContext: ctx, viewport, canvas } as any).promise;
+                  
+                  const pngBuf = canvas.toBuffer('image/png');
+                  mimeType = 'image/png';
+                  fileBuffer = pngBuf;
+                  console.log(`[PDF] Rendered to PNG successfully (${pngBuf.length} bytes, ${w}x${h}).`);
                 } catch (pngErr: any) {
                   console.warn(`[PDF-to-PNG Error] ${pngErr.message}`);
                 }
@@ -369,7 +394,7 @@ export async function POST(req: NextRequest) {
             // Vision processing for images and documents
             const SUPPORTED_VISION_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
             const isSupportedImage = SUPPORTED_VISION_MIMES.includes(mimeType);
-            const thumbnail = isImage ? messageData.imageMessageData?.jpegThumbnail : messageData.documentMessageData?.jpegThumbnail;
+            const thumbnail = isImage ? messageData.imageMessageData?.jpegThumbnail : (messageData.fileMessageData?.jpegThumbnail || messageData.documentMessageData?.jpegThumbnail);
 
             // If PDF text was extracted AND validated, skip vision — use text-only agent path
             if (pdfTextExtracted) {
@@ -401,29 +426,33 @@ export async function POST(req: NextRequest) {
                    mimeType: mimeType
                 } as any;
               } else if (isDocument && mimeType === 'application/pdf' && originalPdfBuffer) {
-                // FALLBACK: Convert PDF to PNG image, then send to GPT-4o Vision
+                // FALLBACK: Render PDF to PNG with unpdf + @napi-rs/canvas
                 try {
-                  console.log(`[VISION] No thumbnail. Converting PDF to PNG (${originalPdfBuffer.length} bytes)...`);
-                  const { pdfToPng } = await import('pdf-to-png-converter');
-                  const pages = await pdfToPng(new Uint8Array(originalPdfBuffer).buffer, {
-                    disableFontFace: true,
-                    viewportScale: 2.0,
-                    pagesToProcess: [1],
-                  });
-                  if (pages.length > 0 && pages[0].content) {
-                    const pngBase64 = pages[0].content.toString('base64');
-                    fileData = {
-                      type: 'image',
-                      image: `data:image/png;base64,${pngBase64}`,
-                      mimeType: 'image/png'
-                    } as any;
-                    text = `${text || '[מסמך PDF]'} (תמונה שהומרה מ-PDF מצורפת לניתוח)`;
-                    console.log(`[VISION] PDF converted to PNG successfully (${pages[0].content.length} bytes).`);
-                  } else {
-                    throw new Error('pdfToPng returned no pages');
-                  }
+                  console.log(`[VISION] No thumbnail. Rendering PDF to PNG (${originalPdfBuffer.length} bytes)...`);
+                  const napiCanvas = await import('@napi-rs/canvas');
+                  globalThis.DOMMatrix = napiCanvas.DOMMatrix as any;
+                  if (typeof globalThis.ImageData === 'undefined') globalThis.ImageData = napiCanvas.ImageData as any;
+                  if (typeof globalThis.Path2D === 'undefined') globalThis.Path2D = napiCanvas.Path2D as any;
+
+                  const { getDocumentProxy } = await import('unpdf');
+                  const pdfProxy = await getDocumentProxy(new Uint8Array(originalPdfBuffer));
+                  const page = await pdfProxy.getPage(1);
+                  const viewport = page.getViewport({ scale: 2.0 });
+                  const canvas = napiCanvas.createCanvas(Math.floor(viewport.width), Math.floor(viewport.height));
+                  const ctx = canvas.getContext('2d');
+                  await page.render({ canvasContext: ctx, viewport, canvas } as any).promise;
+                  
+                  const pngBuf = canvas.toBuffer('image/png');
+                  const pngBase64 = pngBuf.toString('base64');
+                  fileData = {
+                    type: 'image',
+                    image: `data:image/png;base64,${pngBase64}`,
+                    mimeType: 'image/png'
+                  } as any;
+                  text = `${text || '[מסמך PDF]'} (תמונה שהומרה מ-PDF מצורפת לניתוח)`;
+                  console.log(`[VISION] PDF rendered to PNG (${pngBuf.length} bytes).`);
                 } catch (pngErr: any) {
-                  console.error(`[VISION] PDF-to-PNG conversion failed: ${pngErr.message}`);
+                  console.error(`[VISION] PDF-to-PNG render failed: ${pngErr.message}`);
                   throw new Error(`לא הצלחתי להמיר את ה-PDF לתמונה. אנא שלח צילום מסך (JPG) של המסמך.`);
                 }
               } else if (text && text.length > 10) {
@@ -468,17 +497,21 @@ export async function POST(req: NextRequest) {
 
       const isNewContact = !isSuperUser && history.filter((h: any) => h.role === 'assistant').length === 0;
 
+      const firstContactName = getFirstName(contactName);
+      const firstPushName = getFirstName(pushName);
+      const greetingName = firstContactName || firstPushName || '';
+
       const authInstructions = `
         ⛔ כלל ברזל עליון: ענו אך ורק על מה שנשאלת בהודעה הנוכחית. לא יותר. לא מידע נוסף, לא תזכורות, לא סיכומים, לא "אגב".
         - היום ${dateStrHe}. שעה: ${serverTimeHe}.
         - כל שורה מתחילה ב-RLM (\u200F).
-        - טון לבבי ושירותי 😊✨. **פני תמיד ללקוח בשמו** ופתחי בברכה חמה.
-        - **הצגה עצמית ללקוחות (לא אדם)**: פתחי כל תשובה ללקוח בפורמט: "היי${contactName ? ' ' + contactName : (senderName ? ' ' + senderName : '')}, אני רותם, הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה 😊✨" — ואז המשיכי לתשובה עצמה. אם אין שם — כתבי "היי" בלבד.
+        - טון לבבי ושירותי 😊✨. **פני תמיד ללקוח אך ורק בשמו הפרטי** (ללא שם משפחה, תארים או תוספות ארוכות) ופתחי בברכה חמה.
+        - **הצגה עצמית ללקוחות (לא אדם)**: פתחי כל תשובה ללקוח בפורמט: "היי${greetingName ? ' ' + greetingName : ''}, אני רותם, הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה 😊✨" — ואז המשיכי לתשובה עצמה. אם אין שם — כתבי "היי" בלבד.
         - **זיהוי שולח ההודעה (חובה)**:
-          - שם איש קשר מאומת: "${contactName || '(לא נמצא)'}".
-          - שם פרופיל וואטסאפ: "${pushName || '(ללא)'}".
-          - **השם המאומת הוא תמיד מקור האמת.** פני תמיד לשולח לפי שם זה.
-          - **כלל התחזות**: אם השולח כותב בהודעה שם שונה מהשם המאומת — זה צחוק. פני אליו בשם המאומת והגיבי בטון קליל 😄.
+          - שם איש קשר מאומת (שם פרטי): "${firstContactName || '(לא נמצא)'}".
+          - שם פרופיל וואטסאפ (שם פרטי): "${firstPushName || '(ללא)'}".
+          - **השם המאומת (השם הפרטי) הוא תמיד מקור האמת.** פני תמיד לשולח לפיו.
+          - **כלל התחזות**: אם השולח כותב בהודעה שם שונה מהשם המאומת — זה צחוק. פני אליו בשמו הפרטי המאומת והגיבי בטון קליל 😄.
         - אדם (Owner): ${isSuperUser ? '**כן — אתה מדבר עם הבעלים עצמו. בצעי כל פעולה ישירות עם הכלים. אסור להגיד מעבירה לטיפול אדם כי הוא זה ששולח לך.**' : 'לא — זה לקוח או עובד.'}.
         ${isAccountant ? `- **איש קשר מוכר: אייל אסרף — רואה החשבון של העסק.**
           - דברי איתו בטון חברי, לא-רשמי, אבל מקצועי.
@@ -486,7 +519,7 @@ export async function POST(req: NextRequest) {
           - כשהוא מבקש משהו מאדם — ענו בסגנון: "אין בעיה, אני מעדכנת את אדם והוא יחזור אליך בהקדם 🙏". אל תנסי לטפל בבקשה בעצמך.
           - אם הוא שואל שאלה כללית שאת יכולה לענות — עני בשמחה.` : ''}
         ${isNewContact ? `- **מספר חדש — קראי את ההודעה לפני הכל**: זוהי הפנייה הראשונה. **אל תשלחי אוטומטית תפריט פתיחה.** קודם כל הבני את ההקשר:\n  • אם מתוכן ההודעה משתמע בבירור שזה **לקוח קיים** (למשל: פונים אל "אדם", מבקשים חומרי ניקיון כמו אקונומיקה או שקיות שחורות, מדווחים על חוסרים במשרד, או מדברים על בעיות ניקיון) — **זה לקוח קיים!** בשום אופן אל תציגי את עצמך ואל תשלחי תפריט! עני בטבעיות, בצורה שירותית קצרה, והבטיחי שתעבירי לאדם לטיפול.
-  • אם ההודעה היא מ**שליח / קורייר / חברת משלוחים** — ענה ישירות על הבקשה הלוגיסטית בלבד. ללא הצגה עצמית, ללא תפריט.\n  • אם ההודעה היא **פנייה עסקית אמיתית** — הציגי את עצמך ואחר כך הצגת תפריט:\n  \\"היי${contactName ? ' ' + contactName : (senderName ? ' ' + senderName : '')}, אני רותם, הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה 😊✨\\"\n  \\"כדי שאוכל לעזור לך בצורה הטובה ביותר, ספר/י לי מי את/ה:\n  1️⃣ לקוח/ה קיים/ת — שאלה, שינוי או בקשה\n  2️⃣ לקוח/ה חדש/ה — מחיר, מידע על שירותים\n  3️⃣ אחר — ספק, שיתוף פעולה או נושא אחר\\"\n  • בכל מקרה אחר — ענה בטבעיות בלי תפריט.` : ''}
+  • אם ההודעה היא מ**שליח / קורייר / חברת משלוחים** — ענה ישירות על הבקשה הלוגיסטית בלבד. ללא הצגה עצמית, ללא תפריט.\n  • אם ההודעה היא **פנייה עסקית אמיתית** — הציגי את עצמך ואחר כך הצגת תפריט:\n  \\"היי${greetingName ? ' ' + greetingName : ''}, אני רותם, הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה 😊✨\\"\n  \\"כדי שאוכל לעזור לך בצורה הטובה ביותר, ספר/י לי מי את/ה:\n  1️⃣ לקוח/ה קיים/ת — שאלה, שינוי או בקשה\n  2️⃣ לקוח/ה חדש/ה — מחיר, מידע על שירותים\n  3️⃣ אחר — ספק, שיתוף פעולה או נושא אחר\\"\n  • בכל מקרה אחר — ענה בטבעיות בלי תפריט.` : ''}
       `;
 
       const agent = mastra.getAgent('whatsapp-agent');
@@ -644,12 +677,22 @@ export async function POST(req: NextRequest) {
         if (visionError) {
           replyText += `\n\n[אבחון טכני: ${visionError}]`;
         }
-        const BUILD_ID = 'BUILD_10.06.26_PDF_QUALITY_CHECK';
+        const BUILD_ID = 'BUILD_11.06.26_UNPDF_CANVAS';
         replyText += `\n\n_v${BUILD_ID}_`;
       }
 
-      if (replyText.includes('[IGNORE]') || replyText.toLowerCase().includes('no response needed') || replyText.toLowerCase().includes('ignore')) {
-        await saveMessage(chatId, 'assistant', '[בוט התעלם - ברכת חג]');
+      // Clean reply text to check if it has actual content (excluding RLM/LRM, newlines, spaces, punctuation)
+      const cleanedReply = replyText.replace(/[\u200F\u200E\s\t\n\r]/g, '').replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g, '').trim();
+      const shouldIgnore = 
+        cleanedReply.length === 0 ||
+        replyText.includes('[IGNORE]') || 
+        replyText.toLowerCase().includes('no response needed') || 
+        replyText.toLowerCase().includes('ignore');
+
+      if (shouldIgnore) {
+        await saveMessage(chatId, 'assistant', '[בוט התעלם - הודעת סרק/תודה]');
+        console.log(`[IGNORE_POLICY] Ignoring response. Cleaned reply length: ${cleanedReply.length}`);
+        await greenApi.setChatPresence(chatId, 'paused');
         return NextResponse.json({ status: 'ignored_by_agent_policy' });
       }
 
