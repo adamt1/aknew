@@ -1,0 +1,675 @@
+     1	import { NextRequest, NextResponse } from 'next/server';
+     2	import { mastra } from '@/mastra';
+     3	import { pdfToPng } from 'pdf-to-png-converter';
+     4	import { greenApi } from '@/lib/green-api';
+     5	import { saveMessage, getHistory, isBotActive, setBotStatus, isWebhookProcessed } from '@/lib/supabase';
+     6	import { elevenLabs } from '@/lib/elevenlabs';
+     7	import heicConvert from 'heic-convert';
+     8	import { processDueReminders } from '@/lib/reminders';
+     9	
+    10	function isRateLimitError(e: any): boolean {
+    11	  const msg = (e?.message || '').toLowerCase();
+    12	  const status = e?.status || e?.statusCode || e?.response?.status;
+    13	  return status === 429 || msg.includes('too many requests') || msg.includes('rate limit') || msg.includes('ratelimit');
+    14	}
+    15	
+    16	async function agentGenerateWithRetry(
+    17	  agent: any,
+    18	  messages: any[],
+    19	  options: any,
+    20	  maxRetries = 3
+    21	): Promise<any> {
+    22	  let lastError: any;
+    23	  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    24	    try {
+    25	      return await agent.generate(messages, options);
+    26	    } catch (e: any) {
+    27	      lastError = e;
+    28	      if (isRateLimitError(e) && attempt < maxRetries) {
+    29	        const delay = Math.min(1000 * Math.pow(2, attempt), 8000); // 1s, 2s, 4s max 8s
+    30	        console.warn(`[RATE_LIMIT] Attempt ${attempt + 1}/${maxRetries + 1} failed. Retrying in ${delay}ms...`);
+    31	        await new Promise(res => setTimeout(res, delay));
+    32	        continue;
+    33	      }
+    34	      throw e;
+    35	    }
+    36	  }
+    37	  throw lastError;
+    38	}
+    39	
+    40	function assertTrustedDownloadUrl(url: string): void {
+    41	  let parsed: URL;
+    42	  try {
+    43	    parsed = new URL(url);
+    44	  } catch {
+    45	    throw new Error(`Invalid download URL: ${url}`);
+    46	  }
+    47	  const allowedSuffixes = ['.greenapi.com', '.green-api.com', '.digitaloceanspaces.com'];
+    48	  if (!allowedSuffixes.some(suffix => parsed.hostname.endsWith(suffix))) {
+    49	    throw new Error(`Untrusted download URL host: ${parsed.hostname}`);
+    50	  }
+    51	}
+    52	
+    53	export async function POST(req: NextRequest) {
+    54	  const APP_VERSION = 'v5.0-PDF_NATIVE';
+    55	  console.time(`[${APP_VERSION}] webhook-total`);
+    56	
+    57	  let body: any = {};
+    58	  let currentStage = 'init';
+    59	  try {
+    60	    currentStage = 'parsing_webhook';
+    61	    try {
+    62	      body = await req.json();
+    63	    } catch (e) {
+    64	      console.warn('Failed to parse webhook body');
+    65	      return NextResponse.json({ status: 'invalid_json' });
+    66	    }
+    67	    console.log('[WEBHOOK] type:', body.typeWebhook, 'id:', body.idMessage);
+    68	    const type = body.typeWebhook;
+    69	
+    70	    const isIncoming = type === 'incomingMessageReceived' || type === 'webhookIncomingMessageReceived';
+    71	    const isOutgoing = type === 'outgoingMessageReceived' || type === 'outgoingAPIMessageReceived';
+    72	
+    73	    const idMessage = body.idMessage;
+    74	    if (idMessage && (isIncoming || isOutgoing)) {
+    75	      if (await isWebhookProcessed(idMessage)) {
+    76	        console.log(`[DEDUPLICATION] Skipping already processed webhook: ${idMessage} (Type: ${type})`);
+    77	        return NextResponse.json({ status: 'success_deduplicated_by_id' });
+    78	      }
+    79	    }
+    80	
+    81	    if (isIncoming || isOutgoing) {
+    82	      const { senderData, messageData } = body;
+    83	      
+    84	      if ((!senderData && isIncoming) || !messageData) {
+    85	        console.warn('Missing senderData or messageData in webhook body');
+    86	        return NextResponse.json({ status: 'invalid_payload' });
+    87	      }
+    88	
+    89	      const chatId = senderData?.chatId || body.chatId || messageData?.chatId;
+    90	      const wid = body.instanceData?.wid;
+    91	      const rawSender = isIncoming ? senderData?.sender : (senderData?.sender || body.senderData?.sender || chatId);
+    92	      const rawSenderClean = (rawSender || '').replace(/\D/g, '');
+    93	      const chatIdClean = chatId.replace(/\D/g, '');
+    94	      const widNumber = (wid || '').split('@')[0].replace(/\D/g, '').trim();
+    95	      
+    96	      // Exact match on last 9 significant digits — avoids substring/forgery attacks via chatId
+    97	      const SUPER_USER_SUFFIXES = new Set(['526672663']);
+    98	      const senderSuffix = rawSenderClean.slice(-9);
+    99	      const isSuperUser = senderSuffix.length === 9 && SUPER_USER_SUFFIXES.has(senderSuffix);
+   100	
+   101	      // Known contacts with special roles
+   102	      const ACCOUNTANT_SUFFIXES = new Set(['543972690']); // אייל אסרף - רואה חשבון
+   103	      const isAccountant = senderSuffix.length === 9 && ACCOUNTANT_SUFFIXES.has(senderSuffix);
+   104	
+   105	      if (chatId.endsWith('@g.us')) {
+   106	        console.log(`Ignoring group message from ${chatId}`);
+   107	        return NextResponse.json({ status: 'ignored_group' });
+   108	      }
+   109	
+   110	      let contactName = '';
+   111	      let visionError: string | null = null;
+   112	      let fileData: any = null;
+   113	      currentStage = 'initialization';
+   114	      
+   115	      try {
+   116	        const contactInfo = await greenApi.getContactInfo(chatId);
+   117	        contactName = contactInfo.contactName || '';
+   118	      } catch (e) {
+   119	        contactName = senderData?.senderName || '';
+   120	      }
+   121	
+   122	      const pushName = senderData?.senderName || '';
+   123	      // PRIORITY: contactName (from phone contacts) > pushName (WhatsApp profile name set by sender)
+   124	      const senderName = contactName || pushName || '';
+   125	
+   126	      // Filters
+   127	      const blacklist = ['אמא', 'Mom', 'אוריה חיים שלי', 'אריאלי', 'שלומי ידיד', 'קימי', 'קארין', 'סבינה גננת', 'ירון שרעבי', 'חברה שחלו', 'שחלו עובדת', 'זהבה', 'פיני', 'אדיר', 'רז', 'חיים בל'];
+   128	      const blacklistedNumbers = ['972546349803', '0546349803', '546349803', '972542619636', '0542619636', '542619636', '998910366781', '972536553345', '536553345'];
+   129	      
+   130	      const isBlacklisted = (isIncoming && !isSuperUser && (
+   131	        blacklist.some(name => (senderName && senderName.includes(name))) ||
+   132	        blacklistedNumbers.some(num => (chatIdClean && chatIdClean.includes(num)))
+   133	      ));
+   134	
+   135	      if (isBlacklisted) {
+   136	        console.log(`[FILTER] Explicitly ignored blacklisted contact: ${senderName} (${chatId})`);
+   137	        return NextResponse.json({ status: 'ignored_blacklisted' });
+   138	      }
+   139	
+   140	      let text = messageData.textMessageData?.textMessage || 
+   141	                   messageData.extendedTextMessageData?.text ||
+   142	                   messageData.quotedMessage?.text ||
+   143	                   messageData.imageMessageData?.caption ||
+   144	                   messageData.videoMessageData?.caption ||
+   145	                   messageData.documentMessageData?.caption ||
+   146	                   messageData.fileMessageData?.caption;
+   147	
+   148	      const typeMessage = messageData.typeMessage;
+   149	      const isVoiceMessage = typeMessage === 'audioMessage';
+   150	
+   151	      // NEW: Ignore non-content types like reactions, polls, etc.
+   152	      const ignoredTypes = ['reactionMessage', 'pollMessage', 'pollUpdateMessage', 'editedMessage', 'deletedMessage', 'stickerMessage'];
+   153	      if (isIncoming && ignoredTypes.includes(typeMessage)) {
+   154	        console.log(`[FILTER] Ignoring non-content message type: ${typeMessage}`);
+   155	        return NextResponse.json({ status: `ignored_${typeMessage}` });
+   156	      }
+   157	
+   158	      if (type === 'outgoingAPIMessageReceived') {
+   159	        return NextResponse.json({ status: 'ignored_api_outgoing' });
+   160	      }
+   161	
+   162	      if (isOutgoing && isSuperUser) {
+   163	        if (chatId !== rawSender && (!wid || !chatId.includes(widNumber))) {
+   164	          console.log(`[HUMAN_INTERVENTION] Owner messaged ${chatId}. Disabling bot.`);
+   165	          await setBotStatus(chatId, false);
+   166	          return NextResponse.json({ status: 'bot_disabled_by_owner' });
+   167	        }
+   168	      }
+   169	
+   170	      const botTypes = ['templateMessage', 'buttonsMessage', 'listMessage', 'buttonsResponseMessage', 'listResponseMessage', 'templateResponseMessage'];
+   171	      const isBotMessageType = botTypes.includes(typeMessage);
+   172	      const isBotInName = senderName.toLowerCase().includes('bot') || senderName.includes('בוט');
+   173	
+   174	      if (isIncoming && (isBotMessageType || isBotInName)) {
+   175	        console.log(`[BOT_DETECTION] Ignoring message from potential bot: "${senderName}" (Type: ${typeMessage})`);
+   176	        return NextResponse.json({ status: 'ignored_bot' });
+   177	      }
+   178	
+   179	      const active = await isBotActive(chatId);
+   180	      if (!active && !isSuperUser) {
+   181	        return NextResponse.json({ status: 'bot_inactive' });
+   182	      }
+   183	
+   184	      currentStage = 'processing_media';
+   185	
+   186	      const isImage = typeMessage === 'imageMessage';
+   187	      const isDocument = typeMessage === 'documentMessage';
+   188	      const isVideo = typeMessage === 'videoMessage';
+   189	
+   190	      // Non-super users sending media (images, documents, videos): acknowledge without analysis
+   191	      if ((isImage || isDocument || isVideo) && !isSuperUser) {
+   192	        const mediaLabel = isImage ? 'תמונה' : isDocument ? 'מסמך' : 'וידאו';
+   193	        const ackMsg = `\u200Fקיבלתי את ה${mediaLabel}, אני מעבירה את זה להמשך טיפול 🙏`;
+   194	        await greenApi.setChatPresence(chatId, 'composing');
+   195	        await saveMessage(chatId, 'user', `[${mediaLabel}]`);
+   196	        await saveMessage(chatId, 'assistant', ackMsg);
+   197	        await greenApi.sendMessage(chatId, ackMsg);
+   198	        await greenApi.setChatPresence(chatId, 'paused');
+   199	        return NextResponse.json({ status: `${mediaLabel}_acknowledged` });
+   200	      }
+   201	
+   202	      if (isVoiceMessage) {
+   203	        const downloadUrl = messageData.fileMessageData?.downloadUrl;
+   204	        if (downloadUrl) {
+   205	           try {
+   206	             assertTrustedDownloadUrl(downloadUrl);
+   207	             const audioBuffer = await greenApi.downloadFile(downloadUrl);
+   208	             text = await elevenLabs.speechToText(audioBuffer);
+   209	           } catch (e: any) {
+   210	             console.error(`[STT Error] ${e.message}`);
+   211	             return NextResponse.json({ status: 'stt_failed' });
+   212	           }
+   213	        } else if (idMessage) {
+   214	           try {
+   215	             const audioBuffer = await greenApi.downloadFileByMessage(chatId, idMessage);
+   216	             text = await elevenLabs.speechToText(audioBuffer);
+   217	           } catch (e: any) {
+   218	             console.error(`[STT Error via messageId] ${e.message}`);
+   219	           }
+   220	        }
+   221	      } else if (isImage || isDocument || isVideo) {
+   222	        const downloadUrl = messageData.fileMessageData?.downloadUrl || 
+   223	                            messageData.imageMessageData?.downloadUrl || 
+   224	                            messageData.documentMessageData?.downloadUrl ||
+   225	                            messageData.videoMessageData?.downloadUrl;
+   226	        
+   227	        let mimeType = messageData.fileMessageData?.mimeType ||
+   228	                         messageData.imageMessageData?.mimeType ||
+   229	                         messageData.documentMessageData?.mimeType ||
+   230	                         messageData.videoMessageData?.mimeType ||
+   231	                         (isImage ? 'image/jpeg' : isVideo ? 'video/mp4' : 'application/pdf');
+   232	
+   233	        let originalPdfBuffer: Buffer | null = null;
+   234	        try {
+   235	          let fileBuffer: Buffer | null = null;
+   236	          if (downloadUrl) {
+   237	            assertTrustedDownloadUrl(downloadUrl);
+   238	            console.log(`[MEDIA] Downloading ${typeMessage} via URL: ${downloadUrl}`);
+   239	            fileBuffer = await greenApi.downloadFile(downloadUrl);
+   240	          } else if (idMessage) {
+   241	            console.log(`[MEDIA] Downloading ${typeMessage} via MessageId: ${idMessage}`);
+   242	            fileBuffer = await greenApi.downloadFileByMessage(chatId, idMessage);
+   243	          }
+   244	
+   245	          if (fileBuffer) {
+   246	            console.log(`[MEDIA] Downloaded ${fileBuffer.length} bytes. Mime: ${mimeType}`);
+   247	            
+   248	            // HEIC/HEIF Support
+   249	            if (mimeType.includes('heic') || mimeType.includes('heif')) {
+   250	              try {
+   251	                console.log('[VISION] Converting HEIC to JPG...');
+   252	                fileBuffer = Buffer.from(await heicConvert({
+   253	                  buffer: fileBuffer.buffer as ArrayBuffer,
+   254	                  format: 'JPEG',
+   255	                  quality: 0.8
+   256	                }));
+   257	                mimeType = 'image/jpeg';
+   258	                console.log(`[VISION] HEIC converted to ${fileBuffer.length} bytes JPG.`);
+   259	              } catch (heicErr: any) {
+   260	                console.error(`[HEIC Conversion Error] ${heicErr.message}`);
+   261	                throw new Error('אירעה שגיאה בעיבוד תמונה מהאייפון (HEIC). אנא שלח צילום מסך רגיל.');
+   262	              }
+   263	            }
+   264	            
+   265	            // PDF Extraction (Hybrid Flow: Text first, then Image)
+   266	            if (mimeType === 'application/pdf' && fileBuffer) {
+   267	              originalPdfBuffer = fileBuffer;
+   268	              try {
+   269	                console.log('[VISION] Extracting text from PDF...');
+   270	                // @ts-ignore
+   271	                const pdfParse = (await import('pdf-parse'));
+   272	                const pdfData = await (pdfParse as any)(fileBuffer);
+   273	                if (pdfData.text && pdfData.text.trim().length > 50) {
+   274	                  const extractedText = pdfData.text.replace(/\n\s*\n/g, '\n').substring(0, 15000);
+   275	                  text = `${text || '[מסמך PDF]'}\n\n--- תוכן טקסטואלי שחולץ מהמסמך ---\n${extractedText}`;
+   276	                  // Mark as processed text-wise, might still try image thumbnail for context
+   277	                  console.log(`[VISION] PDF text extracted: ${extractedText.length} chars.`);
+   278	                }
+   279	              } catch (pdfParseErr: any) {
+   280	                console.error(`[PDF Parse Error] ${pdfParseErr.message}`);
+   281	              }
+   282	
+   283	              // Try PDF to Image conversion as a fallback/visual context
+   284	              try {
+   285	                console.log('[VISION] Converting PDF to image for visual analysis...');
+   286	                const pngPages = await pdfToPng(fileBuffer as any, { 
+   287	                  pagesToProcess: Array.from({length: 3}, (_, i) => i + 1), // Limit to 3 for speed when text is available
+   288	                  viewportScale: 1.5 // Lower scale for context
+   289	                });
+   290	                if (pngPages.length > 0 && pngPages[0].content) {
+   291	                  fileBuffer = Buffer.from(pngPages[0].content);
+   292	                  mimeType = 'image/png';
+   293	                  console.log(`[VISION] PDF converted to image context.`);
+   294	                }
+   295	              } catch (pdfErr: any) {
+   296	                console.warn(`[PDF Image Fallback Failed] ${pdfErr.message}`);
+   297	                // If text exists, we don't care about image conversion failing
+   298	              }
+   299	            }
+   300	
+   301	            // Vision processing for images and documents
+   302	            const SUPPORTED_VISION_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
+   303	            const isSupportedImage = SUPPORTED_VISION_MIMES.includes(mimeType);
+   304	            const thumbnail = isImage ? messageData.imageMessageData?.jpegThumbnail : messageData.documentMessageData?.jpegThumbnail;
+   305	
+   306	            if ((isImage || isDocument) && fileBuffer) {
+   307	              const MAX_SIZE = 5 * 1024 * 1024; // 5MB limit
+   308	              const useThumbnail = !isSupportedImage || fileBuffer.length > MAX_SIZE;
+   309	
+   310	              if (useThumbnail && thumbnail) {
+   311	                 console.log(`[VISION] Using thumbnail for ${mimeType}`);
+   312	                 // IMPORTANT: Use raw base64 WITHOUT the prefix for the 'image' field
+   313	                 const cleanThumbnail = thumbnail.replace(/^data:image\/[a-z]+;base64,/, '').replace(/\s/g, '');
+   314	                 
+   315	                 fileData = { 
+   316	                   type: 'image', 
+   317	                   image: `data:image/jpeg;base64,${cleanThumbnail}`,
+   318	                   mimeType: 'image/jpeg'
+   319	                 } as any;
+   320	                 
+   321	                 if (isDocument && mimeType === 'application/pdf') {
+   322	                   text = `${text || '[מסמך PDF]'} (שים לב: צירפתי תצוגה מקדימה של העמוד הראשון מהמסמך הדיגיטלי)`;
+   323	                 }
+   324	              } else if (isSupportedImage) {
+   325	                console.log(`[VISION] Sending full image (Mime: ${mimeType}).`);
+   326	                const base64 = fileBuffer.toString('base64');
+   327	                fileData = { 
+   328	                   type: 'image', 
+   329	                   image: `data:${mimeType};base64,${base64}`,
+   330	                   mimeType: mimeType
+   331	                } as any;
+   332	              } else if (text && text.length > 10) {
+   333	                // If we have any extracted text (even short), proceed with text-only analysis
+   334	                console.log('[VISION] Proceeding with extracted text only (no image available).');
+   335	              } else if (originalPdfBuffer) {
+   336	                // Scanned PDF with no text layer and no thumbnail — send raw PDF to GPT-4.1 which supports it natively
+   337	                console.log('[VISION] Falling back to GPT-4.1 native PDF processing (scanned document).');
+   338	                fileData = { type: 'pdf_native', pdfBase64: originalPdfBuffer.toString('base64') } as any;
+   339	              } else {
+   340	                // No image, no thumbnail, no text, no PDF buffer — truly can't process
+   341	                const formatName = mimeType.split('/')[1]?.toUpperCase() || 'לא מוכר';
+   342	                throw new Error(`פורמט ${formatName} דורש המרה לתמונה (JPG) או שהוא מסמך סרוק ללא טקסט. אנא שלח צילום מסך רגיל.`);
+   343	              }
+   344	            }
+   345	            
+   346	            if (!text) {
+   347	              text = `[${isImage ? 'תמונה' : isDocument ? 'מסמך' : 'וידאו'} שצורף]`;
+   348	            }
+   349	          }
+   350	        } catch (e: any) {
+   351	          console.error(`[Media Download Error] ${e.message}`);
+   352	          visionError = `שגיאת הורדה: ${e.message}`;
+   353	          if (!text) text = `[משתמש שלח ${typeMessage}, אך חלה שגיאה טכנית בהורדה]`;
+   354	        }
+   355	      }
+   356	
+   357	      await greenApi.setChatPresence(chatId, isVoiceMessage ? 'recording' : 'composing');
+   358	      const placeholder = isVoiceMessage ? '[הודעה קולית]' : '[קובץ/תמונה]';
+   359	      
+   360	      // CRITICAL: If no text and no media data, this is likely an empty event or unsupported type.
+   361	      // Do not fallback to 'שלום' as it triggers unnecessary AI cycles.
+   362	      if (!text && !isVoiceMessage && !isImage && !isDocument && !isVideo) {
+   363	        console.log('[FILTER] No actionable text or media found. Skipping agent processing.');
+   364	        return NextResponse.json({ status: 'no_actionable_content' });
+   365	      }
+   366	
+   367	      await saveMessage(chatId, 'user', text || placeholder);
+   368	      const history = await getHistory(chatId);
+   369	
+   370	      const messageDate = body.timestamp ? new Date(body.timestamp * 1000) : new Date();
+   371	      const serverDate = new Date();
+   372	      
+   373	      const dateStrHe = messageDate.toLocaleDateString('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+   374	      const serverTimeHe = serverDate.toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false });
+   375	
+   376	      const isNewContact = !isSuperUser && history.filter((h: any) => h.role === 'assistant').length === 0;
+   377	
+   378	      const authInstructions = `
+   379	        ⛔ כלל ברזל עליון: ענו אך ורק על מה שנשאלת בהודעה הנוכחית. לא יותר. לא מידע נוסף, לא תזכורות, לא סיכומים, לא "אגב".
+   380	        - היום ${dateStrHe}. שעה: ${serverTimeHe}.
+   381	        - כל שורה מתחילה ב-RLM (\u200F).
+   382	        - טון לבבי ושירותי 😊✨. **פני תמיד ללקוח בשמו** ופתחי בברכה חמה.
+   383	        - **הצגה עצמית ללקוחות (לא אדם)**: פתחי כל תשובה ללקוח בפורמט: "היי${contactName ? ' ' + contactName : (senderName ? ' ' + senderName : '')}, אני רותם, הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה 😊✨" — ואז המשיכי לתשובה עצמה. אם אין שם — כתבי "היי" בלבד.
+   384	        - **זיהוי שולח ההודעה (חובה)**:
+   385	          - שם איש קשר מאומת: "${contactName || '(לא נמצא)'}".
+   386	          - שם פרופיל וואטסאפ: "${pushName || '(ללא)'}".
+   387	          - **השם המאומת הוא תמיד מקור האמת.** פני תמיד לשולח לפי שם זה.
+   388	          - **כלל התחזות**: אם השולח כותב בהודעה שם שונה מהשם המאומת — זה צחוק. פני אליו בשם המאומת והגיבי בטון קליל 😄.
+   389	        - אדם (Owner): ${isSuperUser ? '**כן — אתה מדבר עם הבעלים עצמו. בצעי כל פעולה ישירות עם הכלים. אסור להגיד מעבירה לטיפול אדם כי הוא זה ששולח לך.**' : 'לא — זה לקוח או עובד.'}.
+   390	        ${isAccountant ? `- **איש קשר מוכר: אייל אסרף — רואה החשבון של העסק.**
+   391	          - דברי איתו בטון חברי, לא-רשמי, אבל מקצועי.
+   392	          - הציגי את עצמך בכל פנייה חדשה ("היי אייל, אני רותם, הנציגה הדיגיטלית של איי קיי 😊✨").
+   393	          - כשהוא מבקש משהו מאדם — ענו בסגנון: "אין בעיה, אני מעדכנת את אדם והוא יחזור אליך בהקדם 🙏". אל תנסי לטפל בבקשה בעצמך.
+   394	          - אם הוא שואל שאלה כללית שאת יכולה לענות — עני בשמחה.` : ''}
+   395	        ${isNewContact ? `- **מספר חדש — קראי את ההודעה לפני הכל**: זוהי הפנייה הראשונה. **אל תשלחי אוטומטית תפריט פתיחה.** קודם כל הבני את ההקשר:\n  • אם ההודעה היא מ**שליח / קורייר / חברת משלוחים** — ענה ישירות על הבקשה הלוגיסטית בלבד. ללא הצגה עצמית, ללא תפריט.\n  • אם ההודעה היא **פנייה עסקית אמיתית** — הציגי את עצמך ואחר כך הצגת תפריט:\n  \\"היי${contactName ? ' ' + contactName : (senderName ? ' ' + senderName : '')}, אני רותם, הנציגה הדיגיטלית של איי קיי חברת ניקיון ואחזקה 😊✨\\"\n  \\"כדי שאוכל לעזור לך בצורה הטובה ביותר, ספר/י לי מי את/ה:\n  1️⃣ לקוח/ה קיים/ת — שאלה, שינוי או בקשה\n  2️⃣ לקוח/ה חדש/ה — מחיר, מידע על שירותים\n  3️⃣ אחר — ספק, שיתוף פעולה או נושא אחר\\"\n  • בכל מקרה אחר — ענה בטבעיות בלי תפריט.` : ''}
+   396	      `;
+   397	
+   398	      const agent = mastra.getAgent('whatsapp-agent');
+   399	      currentStage = 'agent_generation';
+   400	
+   401	      // HISTORY CONSTRUCTION — ARCHITECTURAL FIX:
+   402	      // The model CANNOT reliably ignore history even with explicit instructions.
+   403	      // Solution: Don't send history unless it's genuinely needed for the current exchange.
+   404	      
+   405	      const now = new Date();
+   406	      let historyForPrompt: any[] = [];
+   407	
+   408	      if (isSuperUser) {
+   409	        // OWNER (Adam): Every message is fully independent — no history injection.
+   410	        // Injecting only the previous user message (without the assistant reply) caused
+   411	        // the model to respond to both the old and new question simultaneously.
+   412	      } else {
+   413	        // CLIENTS: Include recent, clean history for conversational context (menu flow, etc.)
+   414	        historyForPrompt = history
+   415	          .filter((h: any) => {
+   416	            const content = (h.content || '').toLowerCase();
+   417	            
+   418	            // Filter out tool outputs and noisy messages that cause bleed
+   419	            const isNoisy = 
+   420	                   content.includes('[אבחון טכני:') || 
+   421	                   content.includes('_vbuild_') ||
+   422	                   content.includes('_build_') ||
+   423	                   content.includes('שמחה לעזור לך עם כל הבקשות') ||
+   424	                   content.includes('סיכום של השיחה') ||
+   425	                   content.includes('לינק יוסיף בהמשך') ||
+   426	                   content.includes('google.com/calendar') ||
+   427	                   content.includes('הוסף ליומן') ||
+   428	                   content.includes('scheduleCalendarEvent') ||
+   429	                   content.includes('scheduleReminder') ||
+   430	                   (content.includes('פגישה') && content.includes('לינק'));
+   431	
+   432	            if (isNoisy) return false;
+   433	
+   434	            // Skip the message we just saved
+   435	            if (content === (text || '').toLowerCase() || content === (placeholder || '').toLowerCase()) return false;
+   436	
+   437	            // Only include messages from the last 10 minutes
+   438	            if (h.created_at) {
+   439	              const msgAge = now.getTime() - new Date(h.created_at).getTime();
+   440	              if (msgAge > 10 * 60 * 1000) return false;
+   441	            }
+   442	
+   443	            return true;
+   444	          })
+   445	          .slice(-2); // Max 2 messages for context
+   446	      }
+   447	      
+   448	      const promptContentParts: any[] = [];
+   449	      
+   450	      if (fileData) {
+   451	        promptContentParts.push(fileData);
+   452	      }
+   453	
+   454	      promptContentParts.push({ type: 'text', text: text || 'שלום' });
+   455	
+   456	      // Build messages — no history bleed possible when historyForPrompt is empty
+   457	      const messages: any[] = [
+   458	        { role: 'system', content: authInstructions },
+   459	        ...historyForPrompt.map((h: any) => ({
+   460	          role: h.role === 'assistant' ? 'assistant' : 'user',
+   461	          content: h.content,
+   462	        })),
+   463	        { role: 'user', content: promptContentParts }
+   464	      ];
+   465	
+   466	      const lastAssistantMessage = history.filter((h: any) => h.role === 'assistant').pop();
+   467	      if (lastAssistantMessage && (new Date().getTime() - new Date(lastAssistantMessage.created_at).getTime() < 10000)) {
+   468	           return NextResponse.json({ status: 'success_deduplicated' });
+   469	      }
+   470	
+   471	      let result: any;
+   472	      try {
+   473	        if (fileData?.type === 'pdf_native') {
+   474	          // GPT-4.1 native PDF support — handles scanned PDFs without image conversion
+   475	          console.log('[VISION] Using GPT-4.1 native PDF processing.');
+   476	          const pdfSystemPrompt = `אתה מנתח מסמכים אובייקטיבי. ענה תמיד בעברית.
+   477	1. זהה את סוג המסמך (ביטוח, חשבונית, קבלה, דוח דלק וכו') לפי התוכן בלבד.
+   478	2. חלץ את כל נקודות המידע: שמות, תאריכים, מספרים, סכומים, פריטים.
+   479	3. הצג סיכום ברור ומסודר.
+   480	4. לאחר הסיכום, ענה בתור "רותם", הנציגה הדיגיטלית של "איי קיי חברת ניקיון ואחזקה" 🧹.
+   481	5. כל שורה מתחילה ב-RLM (\u200F). טון מקצועי ושירותי 😊✨`;
+   482	
+   483	          // OpenAI Responses API (/v1/responses) — supports PDF natively via input_file
+   484	          const pdfOpenAiResponse = await fetch('https://api.openai.com/v1/responses', {
+   485	            method: 'POST',
+   486	            headers: {
+   487	              'Content-Type': 'application/json',
+   488	              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+   489	            },
+   490	            body: JSON.stringify({
+   491	              model: 'gpt-4.1',
+   492	              input: [
+   493	                {
+   494	                  role: 'user',
+   495	                  content: [
+   496	                    {
+   497	                      type: 'input_file',
+   498	                      filename: 'document.pdf',
+   499	                      file_data: `data:application/pdf;base64,${fileData.pdfBase64}`
+   500	                    },
+   501	                    {
+   502	                      type: 'input_text',
+   503	                      text: `${pdfSystemPrompt}\n\nשאלה/הוראה: ${text || 'אנא סכם את המסמך הזה בעברית.'}`
+   504	                    }
+   505	                  ]
+   506	                }
+   507	              ]
+   508	            })
+   509	          });
+   510	
+   511	          const pdfResultJson = await pdfOpenAiResponse.json();
+   512	          if (!pdfOpenAiResponse.ok) {
+   513	            throw new Error(`GPT-4.1 Responses API PDF failed (${pdfOpenAiResponse.status}): ${JSON.stringify(pdfResultJson).substring(0, 300)}`);
+   514	          }
+   515	          // Responses API format: { output: [{ type: "message", content: [{ type: "output_text", text: "..." }] }] }
+   516	          const pdfSummary = pdfResultJson.output?.[0]?.content?.[0]?.text || 'לא ניתן לסכם את המסמך.';
+   517	          visionError = null;
+   518	          result = { text: pdfSummary };
+   519	
+   520	        } else if (fileData) {
+   521	          const visionSystemPrompt = `Objective Document Analyst Mode:
+   522	1. Identify the document type (Car Insurance, ID, Invoice, etc.) based ONLY on the visual content.
+   523	2. Extract key data points objectively (Names, Dates, Policy Numbers, Totals).
+   524	3. DO NOT assume the document is related to the cleaning business or "איי קיי" unless explicitly mentioned in the text.
+   525	4. If it's a Car Insurance document, focus on vehicle details, roadside assistance, and replacement car coverage.
+   526	5. After the objective summary, provide a user-friendly response as 'Rotem' (the digital representative of 'איי קיי חברת ניקיון ואחזקה' 🧹), but ensure the facts remain 100% accurate to the image.
+   527	6. Tone: Professional, service-oriented. Start each line with the hidden RLM (\u200F). 😊✨`;
+   528	          const mergedText = `${visionSystemPrompt}\n\nUser Question/Instruction: ${text || 'Summarize this document accurately.'}`;
+   529	
+   530	          // GPT-4.1 Vision via OpenAI API
+   531	          const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+   532	             method: 'POST',
+   533	             headers: {
+   534	               'Content-Type': 'application/json',
+   535	               'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+   536	             },
+   537	             body: JSON.stringify({
+   538	                model: 'gpt-4.1',
+   539	                stream: false,
+   540	                messages: [
+   541	                  {
+   542	                    role: 'user',
+   543	                    content: [
+   544	                      { type: 'text', text: mergedText },
+   545	                      { 
+   546	                        type: 'image_url', 
+   547	                        image_url: { 
+   548	                          url: fileData.image,
+   549	                          detail: 'high'
+   550	                        } 
+   551	                      }
+   552	                    ]
+   553	                  }
+   554	                ]
+   555	             })
+   556	          });
+   557	
+   558	          const resultJson = await openaiResponse.json();
+   559	
+   560	          if (!openaiResponse.ok) {
+   561	            throw new Error(`OpenAI Vision failed (${openaiResponse.status}): ${JSON.stringify(resultJson).substring(0, 500)}`);
+   562	          }
+   563	
+   564	          const summary = resultJson.choices?.[0]?.message?.content || 'No summary generated.';
+   565	          visionError = null; // Success - no error
+   566	          result = { text: summary };
+   567	        } else {
+   568	          // INCREASE STEPS: 8 steps allow for multiple tool calls in one go
+   569	          result = await agentGenerateWithRetry(agent, messages, { maxSteps: 8 });
+   570	        }
+   571	      } catch (e: any) {
+   572	        console.error(`[Vision AI Error/SDK] Error: ${e.message}`, e);
+   573	        if (fileData) {
+   574	          let errorDetail = e.message;
+   575	          // Capture deep server response if available (400 validation error body)
+   576	          if (e.response?.data) {
+   577	             errorDetail = `${e.message} ServerResponse: ${JSON.stringify(e.response.data).substring(0, 500)}`;
+   578	          } else if (e.cause) {
+   579	             errorDetail = `${e.message} Cause: ${e.cause}`;
+   580	          }
+   581	
+   582	          const imgHead = (typeof fileData.image === 'string') ? fileData.image.substring(0, 30) : 'Binary';
+   583	          const imgInfo = (typeof fileData.image === 'string') ? `DataURL(${fileData.image.length}) Head: ${imgHead}` : `Buf`;
+   584	          visionError = `${errorDetail} (Mime: ${fileData.mimeType || 'unknown'}, Img: ${imgInfo}, Chat: ${chatId}, Owner: ${isSuperUser})`;
+   585	          const textOnlyMessages = messages.map((m: any) => {
+   586	             if (m.role === 'user' && Array.isArray(m.content)) {
+   587	                return { ...m, content: (m.content as any[]).filter(p => p.type === 'text').map(p => p.text).join('\n') };
+   588	             }
+   589	             return m;
+   590	          });
+   591	          
+   592	          result = await agentGenerateWithRetry(agent, textOnlyMessages, {
+   593	            maxSteps: 3,
+   594	            instructions: authInstructions + '\n\nשימי לב קריטי: חלה תקלה טכנית בניתוח המסמך/התמונה (אולי הקובץ כבד מדי או בפורמט לא מוכר). אל תנסי לנחש מה יש בו. פשוט הסבירי ברגישות ובטון האישי שלך (בתור רותם) שאת מתקשה כרגע לקרוא את הקובץ הספציפי הזה, והציעי לשלוח שוב כצילום מסך רגיל או להמתין לבדיקה של אדם. ✨'
+   595	          });
+   596	        } else {
+   597	          throw e;
+   598	        }
+   599	      }
+   600	      console.timeEnd(`[${APP_VERSION}] agent-generate`);
+   601	
+   602	      currentStage = 'sending_response';
+   603	      let replyText = result.text || 'סליחה, נתקלתי בבעיה קטנה.';
+   604	      
+   605	      if (isSuperUser) {
+   606	        if (visionError) {
+   607	          replyText += `\n\n[אבחון טכני: ${visionError}]`;
+   608	        }
+   609	        const BUILD_ID = 'BUILD_28.05.26_OWNER_CALENDAR_FIX';
+   610	        replyText += `\n\n_v${BUILD_ID}_`;
+   611	      }
+   612	
+   613	      if (replyText.includes('[IGNORE]')) {
+   614	        await saveMessage(chatId, 'assistant', '[בוט התעלם - ברכת חג]');
+   615	        return NextResponse.json({ status: 'ignored_by_agent_policy' });
+   616	      }
+   617	
+   618	      // CRITICAL: If vision failed, DO NOT guess. Stop here and return error.
+   619	      if (visionError) {
+   620	         const finalErrorStr = isSuperUser
+   621	           ? `\u200Fסליחה אדם, חלה תקלה טכנית בקריאת הקובץ:\n\n[אבחון טכני: ${visionError}]\n\nאנא נסה לשלוח שוב כצילום מסך (JPG).`
+   622	           : `\u200Fסליחה, לא הצלחתי לפתוח את הקובץ שצירפת 🙏\n\u200Fאנא שלחי אותו שוב כצילום מסך רגיל (JPG) ואשמח לעזור 😊`;
+   623	         await saveMessage(chatId, 'assistant', finalErrorStr);
+   624	         await greenApi.sendMessage(chatId, finalErrorStr);
+   625	         return NextResponse.json({ status: 'vision_error_hard_stop' });
+   626	      }
+   627	
+   628	      await saveMessage(chatId, 'assistant', replyText);
+   629	
+   630	      if (isVoiceMessage) {
+   631	         try {
+   632	           let ttsText = replyText.replace(/https?:\/\/[^\s]+/g, '').trim();
+   633	           const ttsBuffer = await elevenLabs.textToSpeech(ttsText);
+   634	           const uploadUrl = await greenApi.uploadFile(ttsBuffer, 'audio/mpeg', 'reply.mp3');
+   635	           await greenApi.sendFileByUrl(chatId, uploadUrl, 'reply.mp3');
+   636	         } catch (e: any) {
+   637	           console.error(`[TTS Error] ${e.message}`);
+   638	           await greenApi.sendMessage(chatId, replyText);
+   639	         }
+   640	      } else {
+   641	         await greenApi.sendMessage(chatId, replyText);
+   642	      }
+   643	      
+   644	      await greenApi.setChatPresence(chatId, 'paused');
+   645	      console.timeEnd(`[${APP_VERSION}] webhook-total`);
+   646	
+   647	      // Trigger a check for due reminders on every interaction (workaround for Hobby cron limits)
+   648	      processDueReminders().catch(err => console.error('[REMINDER_TRIGGER_ERROR]', err));
+   649	
+   650	      return NextResponse.json({ status: 'success', reply: replyText });
+   651	    }
+   652	
+   653	    return NextResponse.json({ status: 'ignored_event' });
+   654	  } catch (error: any) {
+   655	    console.error('Webhook Error:', error);
+   656	    try {
+   657	      const chatId = body?.senderData?.chatId || body?.chatId || body?.messageData?.chatId;
+   658	      if (chatId) {
+   659	        const rawSender = body?.senderData?.sender || '';
+   660	        const isSuperUserCtx = rawSender.replace(/\D/g, '').slice(-9) === '526672663';
+   661	        let errorMsg: string;
+   662	        if (isRateLimitError(error)) {
+   663	          console.warn(`[RATE_LIMIT_FINAL] All retries exhausted at stage: ${currentStage}`);
+   664	          errorMsg = isSuperUserCtx
+   665	            ? `\u200F⚠️ *Rate Limit (${currentStage}):* ה-API של Grok עמוס. נסה שוב בעוד כמה שניות.`
+   666	            : `\u200Fסליחה, אני עמוסה כרגע 🙏\n\u200Fנסה/י שוב בעוד כמה שניות 😊`;
+   667	        } else {
+   668	          errorMsg = `\u200F⚠️ *שגיאת מערכת:* (${currentStage})\n\u200Fפירוט: ${error.message}`;
+   669	        }
+   670	        await greenApi.sendMessage(chatId, errorMsg);
+   671	      }
+   672	    } catch (e) {}
+   673	    return NextResponse.json({ error: error.message }, { status: 500 });
+   674	  }
+   675	}

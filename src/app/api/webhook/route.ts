@@ -106,7 +106,7 @@ function getFirstName(name: string): string {
 }
 
 export async function POST(req: NextRequest) {
-  const APP_VERSION = 'v5.0-PDF_NATIVE';
+  const APP_VERSION = 'v5.1-VISION_HE';
   console.time(`[${APP_VERSION}] webhook-total`);
 
   let body: any = {};
@@ -260,10 +260,12 @@ export async function POST(req: NextRequest) {
       const hasDocKeywords = text && /(מסמך|קובץ|חתימה|חוזה|טופס)/gi.test(text);
       const isDocumentLink = hasUrl && hasDocKeywords;
 
-      if (!isSuperUser && (isImage || isDocument || isVideo || isDocumentLink)) {
+      // Intercept ONLY documents, videos, and doc-links from non-super users.
+      // Images (receipts, photos) ARE allowed through to Vision AI for all users.
+      if (!isSuperUser && (isDocument || isVideo || isDocumentLink)) {
         const ackMsg = `\u200Fקיבלתי את המסמך ואני מעבירה את זה להמשך טיפול.`;
         await greenApi.setChatPresence(chatId, 'composing');
-        const userSavedText = isDocumentLink ? text : `[${isImage ? 'תמונה' : isDocument ? 'מסמך' : 'וידאו'}]`;
+        const userSavedText = isDocumentLink ? text : `[${isDocument ? 'מסמך' : 'וידאו'}]`;
         await saveMessage(chatId, 'user', userSavedText);
         await saveMessage(chatId, 'assistant', ackMsg);
         await greenApi.sendMessage(chatId, ackMsg);
@@ -599,16 +601,25 @@ export async function POST(req: NextRequest) {
       let result: any;
       try {
         if (fileData) {
-          const visionSystemPrompt = `Objective Document Analyst Mode:
-1. Identify the document type (Car Insurance, ID, Invoice, etc.) based ONLY on the visual content.
-2. Extract key data points objectively (Names, Dates, Policy Numbers, Totals).
-3. DO NOT assume the document is related to the cleaning business or "איי קיי" unless explicitly mentioned in the text.
-4. If it's a Car Insurance document, focus on vehicle details, roadside assistance, and replacement car coverage.
-5. After the objective summary, provide a user-friendly response as 'Rotem' (the digital representative of 'איי קיי חברת ניקיון ואחזקה' 🧹), but ensure the facts remain 100% accurate to the image.
-6. Tone: Professional, service-oriented. Start each line with the hidden RLM (\u200F). 😊✨`;
-          const mergedText = `${visionSystemPrompt}\n\nUser Question/Instruction: ${text || 'Summarize this document accurately.'}`;
+          const visionSystemPrompt = `את רותם, הנציגה הדיגיטלית של 'איי קיי חברת ניקיון ואחזקה' 🧹.
 
-          // GPT-4.1 Vision via OpenAI API
+**כללים עליונים:**
+- עני תמיד בעברית בלבד. אסור לענות באנגלית בשום מצב.
+- כל שורה מתחילה ב-RLM (\u200F).
+- טון: מקצועי, שירותי וחם 😊✨.
+
+**ניתוח תמונות ומסמכים:**
+1. זהי את סוג המסמך/התמונה (קבלה, חשבונית, ביטוח רכב, תעודת זהות, רשימת מוצרים, וכו') לפי התוכן הוויזואלי בלבד.
+2. חלצי נתונים מרכזיים: שמות, תאריכים, מספרי פוליסה, סכומים, פריטים ומחירים.
+3. אם זו קבלה או חשבונית — ארגני את הפריטים בצורה ברורה עם מחירים.
+4. אל תניחי שהמסמך קשור לעסק הניקיון אלא אם כתוב כך במפורש.
+5. הציגי תשובה ידידותית ומסודרת. אם המשתמש ביקש לשמור מחירים — ארגני את המידע בצורה נוחה.
+6. אם לא ניתן לקרוא את התמונה — אמרי "לא הצלחתי לקרוא את התמונה, אנא שלח/י תמונה ברורה יותר 🙏".
+7. **לעולם אל תסרבי לנתח תמונה.** גם אם התמונה לא ברורה לגמרי — נסי לחלץ כל מידע שניתן.`;
+          const userInstruction = text || 'סכמי את התמונה/המסמך הזה בבקשה.';
+          const mergedText = `${visionSystemPrompt}\n\nהוראת המשתמש: ${userInstruction}`;
+
+          // GPT-4o Vision via OpenAI API
           const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
              method: 'POST',
              headers: {
@@ -620,9 +631,13 @@ export async function POST(req: NextRequest) {
                 stream: false,
                 messages: [
                   {
+                    role: 'system',
+                    content: visionSystemPrompt
+                  },
+                  {
                     role: 'user',
                     content: [
-                      { type: 'text', text: mergedText },
+                      { type: 'text', text: userInstruction },
                       { 
                         type: 'image_url', 
                         image_url: { 
@@ -678,7 +693,7 @@ export async function POST(req: NextRequest) {
         if (visionError) {
           replyText += `\n\n[אבחון טכני: ${visionError}]`;
         }
-        const BUILD_ID = 'BUILD_11.06.26_UNPDF_CANVAS';
+        const BUILD_ID = 'BUILD_18.06.26_VISION_HE';
         replyText += `\n\n_v${BUILD_ID}_`;
       }
 
