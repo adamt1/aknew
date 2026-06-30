@@ -1,0 +1,30 @@
+name: Check Reminders
+
+# Run every 5 minutes, 24/7
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-reminders:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Ping reminders endpoint
+        env:
+          CRON_TOKEN: ${{ secrets.CRON_SECRET }}
+        run: |
+          response=$(curl -s -w "\n%{http_code}" \
+            "https://aknew-phi.vercel.app/api/reminders/process?token=${CRON_TOKEN}")
+          
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | head -1)
+          
+          echo "Status: $http_code"
+          echo "Response: $body"
+          
+          if [ "$http_code" != "200" ]; then
+            echo "::error::Reminder check failed with status $http_code"
+            exit 1
+          fi
