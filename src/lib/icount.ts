@@ -105,7 +105,7 @@ export class ICountClient {
     if (options.to_date) {
       payload.end_date = options.to_date;
     }
-    return this.requestWithSession('doc', 'search', payload);
+    return this.requestWithSession('doc', 'search', { limit: 100, ...payload });
   }
 }
 

@@ -55,7 +55,8 @@ export const listICountDocuments = createTool({
         to_date: inputData.to_date
       });
 
-      const docs = response.docs || response.data || response.results || [];
+      const docs = response.results_list || [];
+      const resultsTotal = response.results_total || 0;
       
       if (!Array.isArray(docs) || docs.length === 0) {
         return {
@@ -67,26 +68,28 @@ export const listICountDocuments = createTool({
         };
       }
 
-      // Calculate totals
+      // Filter out cancelled documents and calculate totals
+      const activeDocs = docs.filter((doc: any) => !doc.is_cancelled && !doc.is_cancellation);
       let totalAmount = 0;
-      const docSummaries = docs.map((doc: any) => {
-        const amount = parseFloat(doc.total || doc.amount || doc.sum || 0);
+      const docSummaries = activeDocs.map((doc: any) => {
+        const amount = parseFloat(doc.total || 0);
         totalAmount += amount;
         return {
-          doc_number: doc.docnum || doc.doc_number || doc.id || 'N/A',
-          client_name: doc.client_name || doc.customer_name || 'N/A',
-          date: doc.issue_date || doc.date || doc.created_at || 'N/A',
+          doc_number: doc.docnum || 'N/A',
+          client_id: doc.client_id || 'N/A',
+          date: doc.dateissued || 'N/A',
           type: doc.doctype || inputData.doctype,
           amount: amount,
-          currency: doc.currency || 'ILS'
+          currency: doc.currency_code || 'ILS'
         };
       });
 
       return {
         success: true,
-        message: `נמצאו ${docs.length} מסמכים בתקופה ${inputData.from_date} עד ${inputData.to_date}.`,
-        total_docs: docs.length,
+        message: `נמצאו ${activeDocs.length} מסמכים בתקופה ${inputData.from_date} עד ${inputData.to_date}.`,
+        total_docs: activeDocs.length,
         total_amount: totalAmount,
+        results_total_from_api: resultsTotal,
         currency: 'ILS',
         documents: docSummaries
       };
