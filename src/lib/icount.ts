@@ -75,12 +75,12 @@ export class ICountClient {
       payload.doctype = options.doctype;
     }
     if (options.from_date) {
-      payload.from_date = options.from_date;
+      payload.start_date = options.from_date;
     }
     if (options.to_date) {
-      payload.to_date = options.to_date;
+      payload.end_date = options.to_date;
     }
-    return this.request('doc', 'get_list', payload);
+    return this.request('doc', 'search', payload);
   }
 }
 
