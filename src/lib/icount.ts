@@ -64,6 +64,24 @@ export class ICountClient {
   async createDocument(payload: ICountDocPayload) {
     return this.request('doc', 'create', payload);
   }
+
+  async listDocuments(options: {
+    doctype?: string;
+    from_date?: string;
+    to_date?: string;
+  } = {}) {
+    const payload: any = {};
+    if (options.doctype && options.doctype !== 'all') {
+      payload.doctype = options.doctype;
+    }
+    if (options.from_date) {
+      payload.from_date = options.from_date;
+    }
+    if (options.to_date) {
+      payload.to_date = options.to_date;
+    }
+    return this.request('doc', 'get_list', payload);
+  }
 }
 
 export const icount = new ICountClient();

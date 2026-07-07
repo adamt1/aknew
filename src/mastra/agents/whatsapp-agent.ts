@@ -1,6 +1,6 @@
 import { Agent } from "@mastra/core/agent";
 import { xai } from "@ai-sdk/xai";
-import { createICountDocument } from "../tools/icount-tools";
+import { createICountDocument, listICountDocuments } from "../tools/icount-tools";
 import { scheduleReminder } from "../tools/reminder-tools";
 import { scheduleCalendarEvent, listCalendarEvents, deleteCalendarEvent } from "../tools/calendar-tools";
 
@@ -65,6 +65,14 @@ export const whatsappAgent = new Agent({
 - שגיאה טכנית? "אני לא מצליחה לקרוא את הקובץ". אל תנחשי.
 
 ═══════════════════════════════════════════
+בדיקת הכנסות ומסמכים ב-iCount
+═══════════════════════════════════════════
+- כשאדם (הבעלים) מבקש לבדוק הכנסות, חשבוניות, או מסמכים ב-iCount — השתמשי ב-listICountDocuments.
+- ציני את טווח התאריכים (from_date, to_date) בפורמט YYYY-MM-DD.
+- הציגי סיכום ברור: מספר מסמכים, סכום כולל, ופירוט קצר לפי לקוחות.
+- **רק הבעלים (אדם) רשאי לבקש בדיקת הכנסות**. אם לקוח מבקש — ענו שהנושא יועבר לאדם.
+
+═══════════════════════════════════════════
 טיפול בלקוחות
 ═══════════════════════════════════════════
 - לקוח קיים (1): ענו ישירות.
@@ -89,6 +97,7 @@ export const whatsappAgent = new Agent({
   model: xai("grok-3"),
   tools: {
     createICountDocument,
+    listICountDocuments,
     scheduleReminder,
     scheduleCalendarEvent,
     listCalendarEvents,
