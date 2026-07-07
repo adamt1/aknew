@@ -29,23 +29,16 @@ export class ICountClient {
     };
   }
 
-  async request(module: string, method: string, payload: any = {}) {
+  private checkCredentials() {
     if (!this.config.cid || !this.config.user || !this.config.pass) {
       throw new Error(`iCount credentials are not fully configured. Missing CID: ${!this.config.cid}, USER: ${!this.config.user}, PASS: ${!this.config.pass}`);
     }
+  }
 
-    const body = {
-      cid: this.config.cid,
-      user: this.config.user,
-      pass: this.config.pass,
-      ...payload,
-    };
-
+  private async fetchApi(module: string, method: string, body: any) {
     const response = await fetch(`${this.baseUrl}/${module}/${method}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
 
@@ -59,6 +52,38 @@ export class ICountClient {
     }
 
     return data;
+  }
+
+  // Direct credentials auth (works for doc/create)
+  async request(module: string, method: string, payload: any = {}) {
+    this.checkCredentials();
+    const body = {
+      cid: this.config.cid,
+      user: this.config.user,
+      pass: this.config.pass,
+      ...payload,
+    };
+    return this.fetchApi(module, method, body);
+  }
+
+  // Session-based auth (required for doc/search and other endpoints)
+  async login(): Promise<string> {
+    this.checkCredentials();
+    const data = await this.fetchApi('auth', 'login', {
+      cid: this.config.cid,
+      user: this.config.user,
+      pass: this.config.pass,
+    });
+    if (!data.sid) {
+      throw new Error('iCount login succeeded but no sid returned');
+    }
+    return data.sid;
+  }
+
+  async requestWithSession(module: string, method: string, payload: any = {}) {
+    const sid = await this.login();
+    const body = { sid, ...payload };
+    return this.fetchApi(module, method, body);
   }
 
   async createDocument(payload: ICountDocPayload) {
@@ -80,7 +105,7 @@ export class ICountClient {
     if (options.to_date) {
       payload.end_date = options.to_date;
     }
-    return this.request('doc', 'search', payload);
+    return this.requestWithSession('doc', 'search', payload);
   }
 }
 
