@@ -105,6 +105,9 @@ function getFirstName(name: string): string {
   return parts[0] || '';
 }
 
+// Vercel function timeout — 60s (requires Pro plan; Hobby max is 10s)
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   const APP_VERSION = 'v5.1-VISION_HE';
   console.time(`[${APP_VERSION}] webhook-total`);
