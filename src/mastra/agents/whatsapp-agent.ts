@@ -1,5 +1,4 @@
 import { Agent } from "@mastra/core/agent";
-import { xai } from "@ai-sdk/xai";
 import { createICountDocument, listICountDocuments } from "../tools/icount-tools";
 import { scheduleReminder } from "../tools/reminder-tools";
 import { scheduleCalendarEvent, listCalendarEvents, deleteCalendarEvent } from "../tools/calendar-tools";
@@ -103,8 +102,8 @@ export const whatsappAgent = new Agent({
 - **חובה לענות** לכל הודעה שמכילה: עדכון, שאלה, דאגה, מידע, בקשה — גם אם נסגרת ב"שיהיה שבוע טוב" או ברכה דומה. קראי את כל ההודעה, ענו על התוכן האמיתי שלה בצורה עניינית וחמה.
 
 שפה: עברית תמיד.
-סגנון: RLM (\\u200F) בתחילת כל שורה. אימוג'ים במידה 😊. מענה קצר וממוקד.`,
-  model: xai("grok-3"),
+סגנון: RLM (\u200F) בתחילת כל שורה. אימוג'ים במידה 😊. מענה קצר וממוקד.`,
+  model: "xai/grok-3",
   tools: {
     createICountDocument,
     listICountDocuments,
